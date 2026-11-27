@@ -1,0 +1,346 @@
+import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
+import { Download, Plus, Search } from 'lucide-react';
+import { useState } from 'react';
+import { StageBadge } from '@/components/notaris/stage-badge';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+    Dialog,
+    DialogContent,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import AppLayout from '@/layouts/app-layout';
+import { exportCsv, formatDate, formatRupiah } from '@/lib/format';
+import casesRoute from '@/routes/cases';
+import type { Auth, BreadcrumbItem, NotarisConfig } from '@/types';
+
+const breadcrumbs: BreadcrumbItem[] = [
+    { title: 'Monitoring Akta', href: casesRoute.index() },
+];
+
+type CaseRow = {
+    id: number;
+    nomor: string;
+    client_id: number;
+    client_name: string;
+    jenis_akta: string;
+    is_badan_usaha: boolean;
+    biaya: number;
+    terbayar: number;
+    target_selesai: string | null;
+    penanggung_jawab: string | null;
+    current_stage: string;
+    current_stage_order: number;
+    current_stage_label: string;
+    is_completed: boolean;
+    draft_status: string;
+    created_at: string;
+};
+
+export default function CasesIndex({
+    cases,
+    clients,
+    filters,
+}: {
+    cases: CaseRow[];
+    clients: { id: number; kode: string; label: string }[];
+    filters: { search: string; stage: string };
+}) {
+    const { auth, notarisConfig } = usePage<{
+        auth: Auth;
+        notarisConfig: NotarisConfig;
+    }>().props;
+
+    const [search, setSearch] = useState(filters.search ?? '');
+    const [stage, setStage] = useState(filters.stage ?? 'semua');
+    const [createOpen, setCreateOpen] = useState(false);
+
+    const form = useForm({
+        client_id: clients[0]?.id ? String(clients[0].id) : '',
+        jenis_akta: notarisConfig.jenisAkta[0]?.label ?? 'Akta Pendirian PT',
+        biaya: '',
+        target_selesai: '',
+        penanggung_jawab: auth.user.name,
+        catatan: '',
+    });
+
+    const applyFilter = (nextSearch: string, nextStage: string) => {
+        const params: Record<string, string> = {};
+        if (nextSearch) params.search = nextSearch;
+        if (nextStage !== 'semua') params.stage = nextStage;
+        router.get(casesRoute.index().url, params, { preserveState: true, replace: true });
+    };
+
+    const handleCreate = (e: React.FormEvent) => {
+        e.preventDefault();
+        form.post(casesRoute.store().url, {
+            onSuccess: () => setCreateOpen(false),
+        });
+    };
+
+    const handleExport = () => {
+        exportCsv(
+            'monitoring-akta',
+            cases.map((c) => ({
+                NoBerkas: c.nomor,
+                Klien: c.client_name,
+                JenisAkta: c.jenis_akta,
+                Tahapan: c.is_completed ? 'Selesai & Lunas' : `${c.current_stage_order}. ${c.current_stage_label}`,
+                Biaya: c.biaya,
+                Terbayar: c.terbayar,
+                Sisa: Math.max(0, c.biaya - c.terbayar),
+                Target: c.target_selesai ?? '',
+                PJ: c.penanggung_jawab ?? '',
+            })),
+        );
+    };
+
+    const selectCls =
+        'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none';
+
+    return (
+        <AppLayout breadcrumbs={breadcrumbs}>
+            <Head title="Monitoring Akta — Notaris Suite" />
+            <div className="flex flex-1 flex-col gap-5 p-4 md:p-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <h1 className="text-xl font-bold tracking-tight">Monitoring Proses Akta</h1>
+                        <p className="text-sm text-muted-foreground">
+                            Pantau 10 tahapan akta dari pengisian biodata klien hingga pelunasan biaya.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={handleExport} disabled={cases.length === 0}>
+                            <Download className="mr-1.5 size-4" /> Ekspor CSV
+                        </Button>
+                        <Button
+                            size="sm"
+                            onClick={() => setCreateOpen(true)}
+                            disabled={clients.length === 0}
+                            title={clients.length === 0 ? 'Tambahkan data klien terlebih dahulu' : undefined}
+                        >
+                            <Plus className="mr-1.5 size-4" /> Berkas Baru
+                        </Button>
+                    </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                    <div className="relative flex-1 sm:max-w-xs">
+                        <Search className="absolute top-2.5 left-3 size-4 text-muted-foreground" />
+                        <Input
+                            type="search"
+                            placeholder="Cari nomor / klien / jenis…"
+                            value={search}
+                            onChange={(e) => {
+                                setSearch(e.target.value);
+                                applyFilter(e.target.value, stage);
+                            }}
+                            className="pl-9"
+                        />
+                    </div>
+                    <select
+                        className={`${selectCls} sm:max-w-64`}
+                        value={stage}
+                        onChange={(e) => {
+                            setStage(e.target.value);
+                            applyFilter(search, e.target.value);
+                        }}
+                    >
+                        <option value="semua">Semua Tahapan Aktif</option>
+                        {notarisConfig.stages.map((s) => (
+                            <option key={s.key} value={s.key}>
+                                {s.order}. {s.label}
+                            </option>
+                        ))}
+                        <option value="selesai">✓ Seluruh Tahapan Selesai (Arsip)</option>
+                    </select>
+                    <Badge variant="secondary">{cases.length} berkas</Badge>
+                </div>
+
+                {search && (
+                    <div className="text-xs text-muted-foreground">
+                        Menampilkan hasil pencarian dari <strong>seluruh berkas</strong> (termasuk berkas yang sudah selesai &amp; diarsipkan).
+                    </div>
+                )}
+
+                <div className="overflow-hidden rounded-xl border border-sidebar-border/70 bg-card dark:border-sidebar-border">
+                    {cases.length === 0 ? (
+                        <div className="py-12 text-center text-sm text-muted-foreground">
+                            {clients.length === 0
+                                ? 'Tambahkan data klien terlebih dahulu sebelum membuat berkas akta.'
+                                : 'Belum ada berkas proses akta.'}
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead>
+                                    <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+                                        <th className="px-4 py-3 font-medium">No. Berkas</th>
+                                        <th className="px-4 py-3 font-medium">Klien</th>
+                                        <th className="px-4 py-3 font-medium">Jenis Akta</th>
+                                        <th className="px-4 py-3 font-medium">Progres</th>
+                                        <th className="px-4 py-3 font-medium">Status Tahapan</th>
+                                        <th className="px-4 py-3 font-medium">Keuangan</th>
+                                        <th className="px-4 py-3 text-right font-medium">Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {cases.map((c) => {
+                                        const pct = c.is_completed
+                                            ? 100
+                                            : Math.round((c.current_stage_order / notarisConfig.stages.length) * 100);
+                                        const sisa = Math.max(0, Number(c.biaya) - Number(c.terbayar));
+                                        return (
+                                            <tr key={c.id} className="hover:bg-muted/30">
+                                                <td className="px-4 py-3">
+                                                    <div className="font-semibold">{c.nomor}</div>
+                                                    <div className="text-xs text-muted-foreground">
+                                                        {formatDate(c.created_at)}
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3 font-medium">{c.client_name}</td>
+                                                <td className="px-4 py-3 text-xs">{c.jenis_akta}</td>
+                                                <td className="min-w-28 px-4 py-3">
+                                                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                                                        <div
+                                                            className="h-full rounded-full bg-primary"
+                                                            style={{ width: `${pct}%` }}
+                                                        />
+                                                    </div>
+                                                    <div className="mt-1 text-[11px] text-muted-foreground">{pct}%</div>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <StageBadge
+                                                        order={c.current_stage_order}
+                                                        label={c.current_stage_label}
+                                                        isCompleted={c.is_completed}
+                                                    />
+                                                    {c.draft_status === 'pending_approval' && (
+                                                        <div className="mt-1">
+                                                            <Badge
+                                                                variant="outline"
+                                                                className="border-amber-300 text-[10px] text-amber-700"
+                                                            >
+                                                                Menunggu ACC Draf
+                                                            </Badge>
+                                                        </div>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-3 text-xs">
+                                                    <div>
+                                                        {formatRupiah(c.terbayar)} / {formatRupiah(c.biaya)}
+                                                    </div>
+                                                    <div
+                                                        className={
+                                                            sisa > 0
+                                                                ? 'text-amber-600 dark:text-amber-400'
+                                                                : 'text-emerald-600'
+                                                        }
+                                                    >
+                                                        {sisa > 0 ? `Sisa ${formatRupiah(sisa)}` : 'Lunas'}
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3 text-right">
+                                                    <Button asChild size="sm">
+                                                        <Link href={casesRoute.show(c.id)}>Buka</Link>
+                                                    </Button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Buat Berkas Proses Akta</DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={handleCreate} className="space-y-4">
+                        <div className="space-y-1">
+                            <Label>Klien *</Label>
+                            <select
+                                className={selectCls}
+                                value={form.data.client_id}
+                                onChange={(e) => form.setData('client_id', e.target.value)}
+                                required
+                            >
+                                {clients.map((cl) => (
+                                    <option key={cl.id} value={cl.id}>
+                                        {cl.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="space-y-1">
+                            <Label>Jenis Akta / Layanan *</Label>
+                            <select
+                                className={selectCls}
+                                value={form.data.jenis_akta}
+                                onChange={(e) => form.setData('jenis_akta', e.target.value)}
+                                required
+                            >
+                                {notarisConfig.jenisAkta.map((j) => (
+                                    <option key={j.label} value={j.label}>
+                                        {j.label} {j.is_badan_usaha ? '(Badan Usaha)' : '(Non-Badan Usaha)'}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="space-y-1">
+                                <Label>Total Biaya (Rp) *</Label>
+                                <Input
+                                    type="number"
+                                    min="0"
+                                    value={form.data.biaya}
+                                    onChange={(e) => form.setData('biaya', e.target.value)}
+                                    required
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label>Target Selesai</Label>
+                                <Input
+                                    type="date"
+                                    value={form.data.target_selesai}
+                                    onChange={(e) => form.setData('target_selesai', e.target.value)}
+                                />
+                            </div>
+                        </div>
+                        <div className="space-y-1">
+                            <Label>Penanggung Jawab</Label>
+                            <Input
+                                value={form.data.penanggung_jawab}
+                                onChange={(e) => form.setData('penanggung_jawab', e.target.value)}
+                            />
+                        </div>
+                        <div className="space-y-1">
+                            <Label>Catatan / Uraian Pekerjaan</Label>
+                            <textarea
+                                className="flex min-h-20 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+                                value={form.data.catatan}
+                                onChange={(e) => form.setData('catatan', e.target.value)}
+                            />
+                        </div>
+                        <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
+                                Batal
+                            </Button>
+                            <Button type="submit" disabled={form.processing}>
+                                {form.processing ? 'Menyimpan…' : 'Buat Berkas'}
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+        </AppLayout>
+    );
+}

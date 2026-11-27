@@ -19,7 +19,7 @@ void createInertiaApp({
             case name.startsWith('settings/'):
                 return [AppLayout, SettingsLayout];
             default:
-                return AppLayout;
+                return null;
         }
     },
     strictMode: true,
@@ -32,7 +32,10 @@ void createInertiaApp({
         );
     },
     progress: {
-        color: '#4B5563',
+        delay: 100,
+        color: '#d97706',
+        includeCSS: true,
+        showSpinner: true,
     },
 });
 
