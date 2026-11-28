@@ -261,4 +261,43 @@ class NotarisWorkflowTest extends TestCase
         $this->actingAs($notaris)->delete(route('clients.destroy', $client))->assertRedirect();
         $this->assertNull($client->fresh());
     }
+
+    public function test_notaris_can_verify_document_attached_to_deed_case(): void
+    {
+        $notaris = User::factory()->create(['role' => UserRole::NOTARIS]);
+        $client = Client::create([
+            'kode' => 'KL-0099',
+            'jenis' => 'perusahaan',
+            'nama' => 'Ridwan Anang',
+            'status' => 'Aktif',
+        ]);
+        $case = DeedCase::create([
+            'nomor' => 'AKT-2026-0003',
+            'client_id' => $client->id,
+            'jenis_akta' => 'Akta Pendirian PT',
+            'is_badan_usaha' => true,
+            'biaya' => 5000000,
+            'current_stage' => DeedStage::PELUNASAN_BIAYA,
+            'is_completed' => true,
+        ]);
+        $doc = $client->documents()->create([
+            'deed_case_id' => $case->id,
+            'kategori' => 'Salinan Akta',
+            'nama' => 'Akta Pendirian',
+            'is_complete_checked' => true,
+            'is_verified' => false,
+        ]);
+
+        $this->actingAs($notaris)
+            ->post(route('documents.verify', $doc), [
+                'notes' => 'Dokumen sah',
+            ])
+            ->assertSessionHasNoErrors()
+            ->assertRedirect();
+
+        $fresh = $doc->fresh();
+        $this->assertTrue($fresh->is_verified);
+        $this->assertFalse($fresh->is_rejected);
+        $this->assertSame($notaris->id, $fresh->verified_by);
+    }
 }

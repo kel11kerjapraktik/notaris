@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Enums\DraftStatus;
 use App\Http\Requests\UpsertDocumentRequest;
+use App\Models\DeedCase;
 use App\Models\Document;
 use App\Services\ActivityLogService;
 use App\Services\DeedWorkflowService;
