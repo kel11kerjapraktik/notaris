@@ -59,11 +59,14 @@ export function ConfirmNoteDialog({
                     {showNote && (
                         <div className="my-4 space-y-2">
                             <Label htmlFor="dialog-note">
-                                {noteLabel} {requireNote && <span className="text-destructive">*</span>}
+                                {noteLabel}{' '}
+                                {requireNote && (
+                                    <span className="text-destructive">*</span>
+                                )}
                             </Label>
                             <textarea
                                 id="dialog-note"
-                                className="flex min-h-22 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+                                className="flex min-h-22 w-full rounded-xl border border-input bg-background/85 px-3 py-2 text-sm shadow-xs transition-[color,box-shadow,border-color] placeholder:text-muted-foreground focus-visible:border-amber-500/60 focus-visible:ring-2 focus-visible:ring-amber-500/20 focus-visible:outline-none"
                                 placeholder={notePlaceholder}
                                 value={note}
                                 onChange={(e) => setNote(e.target.value)}
@@ -73,13 +76,21 @@ export function ConfirmNoteDialog({
                         </div>
                     )}
                     <DialogFooter className="mt-4">
-                        <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={processing}>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => onOpenChange(false)}
+                            disabled={processing}
+                        >
                             Batal
                         </Button>
                         <Button
                             type="submit"
                             variant={confirmVariant}
-                            disabled={processing || (requireNote && note.trim().length < 3)}
+                            disabled={
+                                processing ||
+                                (requireNote && note.trim().length < 3)
+                            }
                         >
                             {processing ? 'Memproses…' : confirmLabel}
                         </Button>

@@ -104,17 +104,12 @@ class NotarisWorkflowTest extends TestCase
             ->assertRedirect();
         $this->assertSame(PaymentStatus::LUNAS, $dp->fresh()->status);
 
-        // Staf requests doc verification approval, Notaris ACCs before advancing Stage 3 -> Stage 4
+        // Staf requests doc verification approval, Notaris ACCs -> auto-advances Stage 3 -> Stage 4
         $this->actingAs($staf)->post(route('cases.advance', $case))->assertSessionHasErrors('stage');
-        $this->actingAs($staf)->post(route('cases.request-doc-approval', $case))->assertRedirect();
+        $this->actingAs($staf)->post(route('cases.request-doc-approval', $case))->assertSessionHasNoErrors()->assertRedirect();
         $this->assertSame('pending_approval', $case->fresh()->doc_approval_status);
-        $this->actingAs($notaris)->post(route('cases.approve-doc', $case))->assertRedirect();
+        $this->actingAs($notaris)->post(route('cases.approve-doc', $case))->assertSessionHasNoErrors()->assertRedirect();
         $this->assertSame('approved', $case->fresh()->doc_approval_status);
-
-        // Advance Stage 3 -> Stage 4 (pengerjaan_akta)
-        $this->actingAs($staf)
-            ->post(route('cases.advance', $case))
-            ->assertRedirect();
         $this->assertSame(DeedStage::PENGERJAAN_AKTA, $case->fresh()->current_stage);
 
         // Stage 4 -> Stage 5 locked until Notaris approves draft
@@ -122,16 +117,24 @@ class NotarisWorkflowTest extends TestCase
             ->post(route('cases.advance', $case))
             ->assertSessionHasErrors('stage');
 
-        // Staf requests draft approval, Notaris approves
-        $this->actingAs($staf)->post(route('cases.request-draft', $case))->assertRedirect();
+        // Staf requests draft approval, Notaris approves -> auto-advances Stage 4 -> Stage 5
+        $this->actingAs($staf)->post(route('cases.request-draft', $case))->assertSessionHasNoErrors()->assertRedirect();
         $this->assertSame(DraftStatus::PENDING_APPROVAL, $case->fresh()->draft_status);
 
-        $this->actingAs($notaris)->post(route('cases.approve-draft', $case))->assertRedirect();
+        $this->actingAs($notaris)->post(route('cases.approve-draft', $case))->assertSessionHasNoErrors()->assertRedirect();
         $this->assertSame(DraftStatus::APPROVED, $case->fresh()->draft_status);
-
-        // Advance Stage 4 -> Stage 5 (penandatanganan_minuta)
-        $this->actingAs($staf)->post(route('cases.advance', $case))->assertRedirect();
         $this->assertSame(DeedStage::PENANDATANGANAN_MINUTA, $case->fresh()->current_stage);
+
+        // Stage 5 (Penandatanganan Minuta) can only be advanced by Notaris
+        $this->actingAs($staf)
+            ->post(route('cases.advance', $case))
+            ->assertSessionHasErrors('stage');
+
+        $this->actingAs($notaris)
+            ->post(route('cases.advance', $case))
+            ->assertSessionHasNoErrors()
+            ->assertRedirect();
+        $this->assertSame(DeedStage::PENERBITAN_AKTA_SK_AHU, $case->fresh()->current_stage);
     }
 
     public function test_non_badan_usaha_can_skip_stages_6_to_9_and_document_max_2mb(): void
@@ -183,5 +186,79 @@ class NotarisWorkflowTest extends TestCase
             ->assertRedirect();
 
         $this->assertSame(DeedStage::PEMILIK_MANFAAT, $case->fresh()->current_stage);
+    }
+
+    public function test_inactive_users_cannot_login_or_access_authenticated_routes(): void
+    {
+        $inactive = User::factory()->create(['is_active' => false]);
+
+        $this->post(route('login.store'), [
+            'email' => $inactive->email,
+            'password' => 'password',
+        ])->assertSessionHasErrors('email');
+
+        $this->assertGuest();
+
+        $this->actingAs($inactive)
+            ->get(route('dashboard'))
+            ->assertRedirect(route('login'));
+
+        $this->assertGuest();
+    }
+
+    public function test_authorization_search_and_lunas_payment_immutability(): void
+    {
+        $notaris = User::factory()->create(['role' => UserRole::NOTARIS]);
+        $staf = User::factory()->create(['role' => UserRole::STAF]);
+
+        $client = Client::create([
+            'kode' => 'KL-0009',
+            'jenis' => 'pribadi',
+            'nama' => 'Budi Santoso',
+        ]);
+
+        $case = DeedCase::create([
+            'nomor' => 'AKT-2026-0009',
+            'client_id' => $client->id,
+            'jenis_akta' => 'Akta Hibah',
+            'is_badan_usaha' => false,
+            'biaya' => 5000000,
+            'current_stage' => DeedStage::PEMBAYARAN_DP,
+            'draft_status' => DraftStatus::NONE,
+        ]);
+
+        // Search endpoints must work across database drivers (SQLite & PostgreSQL)
+        $this->actingAs($staf)->get(route('clients.index', ['search' => 'budi']))->assertOk();
+        $this->actingAs($staf)->get(route('cases.index', ['search' => 'hibah']))->assertOk();
+        $this->actingAs($staf)->get(route('documents.index', ['search' => 'ktp']))->assertOk();
+        $this->actingAs($staf)->get(route('archives.index', ['search' => 'budi']))->assertOk();
+
+        // Staf cannot delete client; Notaris can
+        $this->actingAs($staf)->delete(route('clients.destroy', $client))->assertForbidden();
+
+        // Confirmed (LUNAS) payment cannot be edited directly
+        $payment = Payment::create([
+            'deed_case_id' => $case->id,
+            'no_inv' => 'INV-2026-0009',
+            'termin_ke' => 1,
+            'payment_type' => 'dp_50',
+            'jumlah' => 2500000,
+            'metode' => 'Transfer Bank',
+            'status' => PaymentStatus::LUNAS,
+        ]);
+
+        $this->actingAs($staf)
+            ->put(route('payments.update', $payment), [
+                'termin_ke' => 1,
+                'payment_type' => 'dp_50',
+                'jumlah' => 1000000,
+                'metode' => 'Transfer Bank',
+            ])
+            ->assertSessionHasErrors('status');
+
+        $this->assertSame(2500000.0, (float) $payment->fresh()->jumlah);
+
+        $this->actingAs($notaris)->delete(route('clients.destroy', $client))->assertRedirect();
+        $this->assertNull($client->fresh());
     }
 }

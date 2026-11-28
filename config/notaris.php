@@ -12,6 +12,8 @@ return [
 
     'allowed_mimes' => ['pdf', 'jpg', 'jpeg', 'png', 'webp'],
 
+    'draft_mimes' => ['pdf', 'doc', 'docx', 'zip', 'jpg', 'jpeg', 'png', 'webp'],
+
     'jenis_akta' => [
         ['label' => 'Akta Pendirian PT', 'is_badan_usaha' => true],
         ['label' => 'Akta Pendirian CV', 'is_badan_usaha' => true],

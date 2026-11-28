@@ -1,7 +1,22 @@
 import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
-import { ChevronDown, ChevronRight, Download, FileCheck2, Folder, Printer, Search, Upload } from 'lucide-react';
+import {
+    CheckCircle2,
+    ChevronDown,
+    ChevronRight,
+    Download,
+    Eye,
+    FileCheck2,
+    FileText,
+    Folder,
+    FolderArchive,
+    FolderOpen,
+    Printer,
+    Upload,
+} from 'lucide-react';
 import { useState } from 'react';
 import InputError from '@/components/input-error';
+import { SearchInput } from '@/components/notaris/search-input';
+import { StatCard } from '@/components/notaris/stat-card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,12 +29,24 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useDebouncedCallback } from '@/hooks/use-debounced-callback';
 import AppLayout from '@/layouts/app-layout';
-import { escapeHtml, exportCsv, formatDate, formatRupiah, printDocument } from '@/lib/format';
+import {
+    escapeHtml,
+    exportCsv,
+    formatDate,
+    formatRupiah,
+    printDocument,
+} from '@/lib/format';
 import archivesRoute from '@/routes/archives';
 import casesRoute from '@/routes/cases';
 import documentsRoute from '@/routes/documents';
-import type { Auth, BreadcrumbItem, DocumentItem, NotarisConfig } from '@/types';
+import type {
+    Auth,
+    BreadcrumbItem,
+    DocumentItem,
+    NotarisConfig,
+} from '@/types';
 
 const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Pengarsipan', href: archivesRoute.index() },
@@ -65,6 +92,9 @@ export default function ArchivesIndex({
     }>().props;
 
     const [search, setSearch] = useState(filters.search ?? '');
+    const [folderFilter, setFolderFilter] = useState<
+        'semua' | 'selesai' | 'proses'
+    >('semua');
     const [openIds, setOpenIds] = useState<Record<number, boolean>>({});
     const [bastTarget, setBastTarget] = useState<{
         folder: ArchiveFolder;
@@ -81,7 +111,10 @@ export default function ArchivesIndex({
         keterangan: '',
     });
 
-    const openBastUpload = (folder: ArchiveFolder, deedCase: ArchiveFolder['cases'][number]) => {
+    const openBastUpload = (
+        folder: ArchiveFolder,
+        deedCase: ArchiveFolder['cases'][number],
+    ) => {
         bastForm.reset();
         bastForm.clearErrors();
         bastForm.setData({
@@ -105,7 +138,10 @@ export default function ArchivesIndex({
         });
     };
 
-    const handlePrintBast = (f: ArchiveFolder, c: ArchiveFolder['cases'][number]) => {
+    const handlePrintBast = (
+        f: ArchiveFolder,
+        c: ArchiveFolder['cases'][number],
+    ) => {
         const body = `
             <p style="margin:0 0 12px;">
                 Pada hari ini, <strong>${escapeHtml(formatDate(new Date().toISOString()))}</strong>, telah dilakukan serah terima dokumen akta yang telah selesai diproses oleh <strong>${escapeHtml(notarisConfig.office.name)}</strong> kepada pihak penerima dengan rincian sebagai berikut:
@@ -158,12 +194,16 @@ export default function ArchivesIndex({
         setOpenIds((prev) => ({ ...prev, [id]: !prev[id] }));
     };
 
-    const handleSearch = (val: string) => {
-        setSearch(val);
+    const debouncedSearch = useDebouncedCallback((val: string) => {
         router.get(archivesRoute.index().url, val ? { search: val } : {}, {
             preserveState: true,
             replace: true,
         });
+    }, 300);
+
+    const handleSearch = (val: string) => {
+        setSearch(val);
+        debouncedSearch(val);
     };
 
     const handlePrintClient = (f: ArchiveFolder) => {
@@ -194,15 +234,17 @@ export default function ArchivesIndex({
         const isImageDoc = (d: DocumentItem) =>
             Boolean(
                 d.file_path &&
-                    (d.mime_type?.startsWith('image/') ||
-                        /\.(png|jpe?g|webp|gif)$/i.test(d.file_name ?? d.file_path)),
+                (d.mime_type?.startsWith('image/') ||
+                    /\.(png|jpe?g|webp|gif)$/i.test(
+                        d.file_name ?? d.file_path,
+                    )),
             );
 
         const isPdfDoc = (d: DocumentItem) =>
             Boolean(
                 d.file_path &&
-                    (d.mime_type === 'application/pdf' ||
-                        /\.pdf$/i.test(d.file_name ?? d.file_path)),
+                (d.mime_type === 'application/pdf' ||
+                    /\.pdf$/i.test(d.file_name ?? d.file_path)),
             );
 
         const attachmentsHtml = f.documents
@@ -218,7 +260,10 @@ export default function ArchivesIndex({
 
                 let contentHtml = `<div class="attachment-note">Dokumen ini belum memiliki file lampiran yang diunggah.</div>`;
                 if (d.file_path) {
-                    const fileUrl = new URL(documentsRoute.download(d.id).url, window.location.origin).toString();
+                    const fileUrl = new URL(
+                        documentsRoute.download(d.id).url,
+                        window.location.origin,
+                    ).toString();
                     if (isImageDoc(d)) {
                         contentHtml = `<img class="attachment-img" src="${escapeHtml(fileUrl)}" alt="${escapeHtml(d.nama)}" />`;
                     } else if (isPdfDoc(d)) {
@@ -278,7 +323,12 @@ export default function ArchivesIndex({
             ),
         );
         const body = `<table><thead><tr><th>Kode</th><th>Klien</th><th>Dokumen</th><th>Kategori</th><th>Tanggal</th></tr></thead><tbody>${rows.join('') || '<tr><td colspan="5">-</td></tr>'}</tbody></table>`;
-        printDocument('Buku Arsip Dokumen', `Dicetak ${formatDate(new Date().toISOString())}`, body, notarisConfig.office);
+        printDocument(
+            'Buku Arsip Dokumen',
+            `Dicetak ${formatDate(new Date().toISOString())}`,
+            body,
+            notarisConfig.office,
+        );
     };
 
     const handleExportCsv = () => {
@@ -297,102 +347,335 @@ export default function ArchivesIndex({
     };
 
     const totalDocs = folders.reduce((s, f) => s + f.documents.length, 0);
+    const completedCasesCount = folders.reduce(
+        (s, f) => s + f.cases.filter((c) => c.is_completed).length,
+        0,
+    );
+    const bastCount = folders.reduce(
+        (s, f) => s + f.cases.filter((c) => Boolean(c.bast_document)).length,
+        0,
+    );
+
+    const visibleFolders = folders.filter((f) => {
+        if (folderFilter === 'semua') return true;
+        const hasCompleted = f.cases.some((c) => c.is_completed);
+        const allCompleted =
+            f.cases.length > 0 && f.cases.every((c) => c.is_completed);
+        return folderFilter === 'selesai'
+            ? allCompleted || hasCompleted
+            : !allCompleted;
+    });
+
+    const anyOpen = visibleFolders.some((f) => Boolean(openIds[f.id]));
+    const handleToggleAll = () => {
+        if (anyOpen) {
+            setOpenIds({});
+            return;
+        }
+        const next: Record<number, boolean> = {};
+        for (const f of visibleFolders) next[f.id] = true;
+        setOpenIds(next);
+    };
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Pengarsipan — Notaris Suite" />
             <div className="flex flex-1 flex-col gap-5 p-4 md:p-6">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                        <h1 className="text-xl font-bold tracking-tight">Pengarsipan Digital</h1>
-                        <p className="text-sm text-muted-foreground">
-                            Arsip terstruktur per folder klien ({folders.length} folder • {totalDocs} dokumen).
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={totalDocs === 0}>
-                            <Download className="mr-1.5 size-4" /> Ekspor CSV
-                        </Button>
-                        <Button variant="outline" size="sm" onClick={handlePrintBook} disabled={totalDocs === 0}>
-                            <Printer className="mr-1.5 size-4" /> Cetak Buku Arsip
-                        </Button>
+                <div className="relative overflow-hidden rounded-2xl border border-amber-500/25 bg-gradient-to-br from-card via-card to-amber-50/45 p-5 shadow-sm dark:to-amber-950/20">
+                    <div className="pointer-events-none absolute -top-14 -right-14 size-44 rounded-full bg-amber-400/15 blur-3xl dark:bg-amber-500/10" />
+                    <div className="relative flex flex-wrap items-center justify-between gap-4">
+                        <div className="flex items-start gap-3.5">
+                            <div className="hidden size-11 shrink-0 items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/12 text-amber-700 shadow-xs sm:flex dark:bg-amber-500/15 dark:text-amber-300">
+                                <FolderArchive className="size-5" />
+                            </div>
+                            <div className="space-y-1">
+                                <p className="text-[11px] font-semibold tracking-[0.2em] text-amber-700 uppercase dark:text-amber-400/90">
+                                    Repositori Dokumen
+                                </p>
+                                <h1 className="font-serif text-2xl font-bold tracking-tight text-foreground">
+                                    Pengarsipan Digital
+                                </h1>
+                                <p className="text-sm text-muted-foreground">
+                                    Arsip terstruktur per folder klien (
+                                    {folders.length} folder • {totalDocs}{' '}
+                                    dokumen).
+                                </p>
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleExportCsv}
+                                disabled={totalDocs === 0}
+                            >
+                                <Download className="mr-1.5 size-4" /> Ekspor
+                                CSV
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handlePrintBook}
+                                disabled={totalDocs === 0}
+                            >
+                                <Printer className="mr-1.5 size-4" /> Cetak Buku
+                                Arsip
+                            </Button>
+                        </div>
                     </div>
                 </div>
 
-                <div className="relative max-w-sm">
-                    <Search className="absolute top-2.5 left-3 size-4 text-muted-foreground" />
-                    <Input
-                        type="search"
-                        placeholder="Cari folder klien…"
-                        value={search}
-                        onChange={(e) => handleSearch(e.target.value)}
-                        className="pl-9"
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    <StatCard
+                        label="Total Folder Klien"
+                        value={folders.length}
+                        valueClassName="text-amber-600 dark:text-amber-400"
+                        icon={<Folder className="size-4" />}
+                    />
+                    <StatCard
+                        label="Berkas Akta Selesai"
+                        value={completedCasesCount}
+                        note="siap cetak BAST"
+                        valueClassName="text-emerald-600 dark:text-emerald-400"
+                        icon={<CheckCircle2 className="size-4" />}
+                    />
+                    <StatCard
+                        label="Dokumen Terarsip"
+                        value={totalDocs}
+                        icon={<FileText className="size-4" />}
+                    />
+                    <StatCard
+                        label="BAST Tersimpan"
+                        value={bastCount}
+                        note="bertanda tangan"
+                        icon={<FileCheck2 className="size-4" />}
                     />
                 </div>
 
+                <div className="flex flex-col gap-3 rounded-2xl border border-amber-500/20 bg-card/90 p-3 shadow-xs lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                        {[
+                            { key: 'semua', label: 'Semua Folder' },
+                            { key: 'selesai', label: 'Ada Akta Selesai' },
+                            { key: 'proses', label: 'Masih Proses' },
+                        ].map((opt) => (
+                            <Button
+                                key={opt.key}
+                                type="button"
+                                size="sm"
+                                variant={
+                                    folderFilter === opt.key
+                                        ? 'default'
+                                        : 'ghost'
+                                }
+                                onClick={() =>
+                                    setFolderFilter(
+                                        opt.key as typeof folderFilter,
+                                    )
+                                }
+                            >
+                                {opt.label}
+                            </Button>
+                        ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                        <SearchInput
+                            value={search}
+                            onChange={handleSearch}
+                            placeholder="Cari kode / nama klien…"
+                            ariaLabel="Cari folder arsip klien"
+                            className="flex-1 sm:w-64 lg:flex-none"
+                        />
+                        {visibleFolders.length > 0 && (
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={handleToggleAll}
+                            >
+                                {anyOpen ? 'Tutup Semua' : 'Buka Semua'}
+                            </Button>
+                        )}
+                        <Badge
+                            variant="secondary"
+                            className="border border-amber-500/25 bg-amber-500/10 px-2.5 py-1 text-amber-800 dark:text-amber-300"
+                        >
+                            {visibleFolders.length} folder
+                        </Badge>
+                    </div>
+                </div>
+
                 <div className="space-y-3">
-                    {folders.length === 0 ? (
-                        <div className="rounded-xl border bg-card py-12 text-center text-sm text-muted-foreground">
-                            Belum ada folder arsip klien.
+                    {visibleFolders.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-amber-500/25 bg-card py-12 text-center text-sm text-muted-foreground shadow-sm">
+                            <span className="flex size-10 items-center justify-center rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                                <FolderArchive className="size-5" />
+                            </span>
+                            <span>
+                                {search || folderFilter !== 'semua'
+                                    ? 'Tidak ditemukan folder arsip yang sesuai.'
+                                    : 'Belum ada folder arsip klien.'}
+                            </span>
                         </div>
                     ) : (
-                        folders.map((f) => {
+                        visibleFolders.map((f) => {
                             const isOpen = Boolean(openIds[f.id]);
+                            const folderBastCount = f.cases.filter((c) =>
+                                Boolean(c.bast_document),
+                            ).length;
+                            const folderDoneCount = f.cases.filter(
+                                (c) => c.is_completed,
+                            ).length;
+
                             return (
-                                <div key={f.id} className="overflow-hidden rounded-xl border bg-card">
+                                <div
+                                    key={f.id}
+                                    className="overflow-hidden rounded-2xl border border-amber-500/25 bg-card shadow-sm transition-colors"
+                                >
                                     <button
                                         type="button"
+                                        aria-expanded={isOpen}
                                         onClick={() => toggleFolder(f.id)}
-                                        className="flex w-full items-center gap-3 p-4 text-left hover:bg-muted/40"
+                                        className="flex w-full items-center gap-3.5 p-4 text-left transition-colors hover:bg-amber-500/5 focus-visible:ring-2 focus-visible:ring-amber-500/30 focus-visible:outline-none"
                                     >
-                                        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300">
-                                            <Folder className="size-5" />
+                                        <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/12 text-amber-700 ring-1 ring-amber-500/25 dark:bg-amber-500/15 dark:text-amber-300">
+                                            {isOpen ? (
+                                                <FolderOpen className="size-5" />
+                                            ) : (
+                                                <Folder className="size-5" />
+                                            )}
                                         </div>
-                                        <div className="min-w-0 flex-1">
-                                            <div className="truncate font-semibold">
-                                                {f.kode} — {f.nama}
+                                        <div className="min-w-0 flex-1 space-y-1">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Badge
+                                                    variant="outline"
+                                                    className="border-amber-500/35 bg-amber-500/10 font-mono text-[11px] font-semibold text-amber-800 dark:text-amber-300"
+                                                >
+                                                    {f.kode}
+                                                </Badge>
+                                                <span className="truncate font-serif text-base font-bold text-foreground">
+                                                    {f.nama}
+                                                </span>
+                                                {f.company_name && (
+                                                    <span className="truncate text-xs font-medium text-muted-foreground">
+                                                        • {f.company_name}
+                                                    </span>
+                                                )}
                                             </div>
-                                            <div className="text-xs text-muted-foreground">
-                                                {f.company_name ? `${f.company_name} • ` : ''}
-                                                {f.documents.length} dokumen • {f.cases.length} berkas akta
+                                            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                <span>
+                                                    {f.documents.length} dokumen
+                                                </span>
+                                                <span>•</span>
+                                                <span>
+                                                    {f.cases.length} berkas akta
+                                                </span>
+                                                {folderDoneCount > 0 && (
+                                                    <Badge className="border-emerald-200 bg-emerald-50 text-[10px] text-emerald-700 hover:bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
+                                                        {folderDoneCount}{' '}
+                                                        Selesai
+                                                    </Badge>
+                                                )}
+                                                {folderBastCount > 0 && (
+                                                    <Badge className="border-amber-300 bg-amber-50 text-[10px] text-amber-800 hover:bg-amber-50 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                                                        {folderBastCount} BAST
+                                                    </Badge>
+                                                )}
                                             </div>
                                         </div>
                                         {isOpen ? (
-                                            <ChevronDown className="size-4 text-muted-foreground" />
+                                            <ChevronDown className="size-4 shrink-0 text-amber-700 dark:text-amber-300" />
                                         ) : (
-                                            <ChevronRight className="size-4 text-muted-foreground" />
+                                            <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
                                         )}
                                     </button>
 
                                     {isOpen && (
-                                        <div className="border-t bg-muted/20 p-4 space-y-3">
-                                            <div className="flex flex-wrap justify-end gap-2">
-                                                <Button size="sm" variant="outline" onClick={() => handlePrintClient(f)}>
-                                                    <Printer className="mr-1.5 size-3.5" /> Cetak Lembar Arsip
+                                        <div className="space-y-5 border-t border-amber-500/15 bg-amber-500/[0.03] p-4 sm:p-5">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="h-4 w-1 rounded-full bg-gradient-to-b from-amber-400 to-amber-600" />
+                                                    <span className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                                                        Ringkasan Folder Klien
+                                                    </span>
+                                                </div>
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() =>
+                                                        handlePrintClient(f)
+                                                    }
+                                                >
+                                                    <Printer className="mr-1.5 size-3.5" />{' '}
+                                                    Cetak Lembar Arsip
                                                 </Button>
                                             </div>
+
                                             {f.cases.length > 0 && (
-                                                <div className="space-y-1.5">
-                                                    <div className="text-xs font-semibold text-muted-foreground uppercase">
-                                                        Berkas Akta
+                                                <div className="space-y-2">
+                                                    <div className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                                                        Berkas Akta (
+                                                        {f.cases.length})
                                                     </div>
                                                     {f.cases.map((c) => (
                                                         <div
                                                             key={c.id}
-                                                            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-sm"
+                                                            className="flex flex-col gap-3 rounded-xl border border-amber-500/20 bg-card p-3.5 text-sm shadow-xs transition-colors hover:border-amber-500/40 sm:flex-row sm:items-center sm:justify-between"
                                                         >
-                                                            <div className="flex flex-wrap items-center gap-2">
-                                                                <div>
-                                                                    <span className="font-semibold">{c.nomor}</span> —{' '}
-                                                                    {c.jenis_akta}
-                                                                    <span className="ml-2 text-xs text-muted-foreground">
-                                                                        ({c.is_completed ? 'Selesai' : c.current_stage_label})
+                                                            <div className="min-w-0 space-y-1">
+                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                    <span className="font-semibold text-foreground">
+                                                                        {
+                                                                            c.nomor
+                                                                        }
                                                                     </span>
-                                                                </div>
-                                                                {c.bast_document && (
-                                                                    <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
-                                                                        <FileCheck2 className="mr-1 size-3" /> BAST Tersimpan
+                                                                    <span className="text-muted-foreground">
+                                                                        —
+                                                                    </span>
+                                                                    <span className="font-medium text-foreground/90">
+                                                                        {
+                                                                            c.jenis_akta
+                                                                        }
+                                                                    </span>
+                                                                    <Badge
+                                                                        variant={
+                                                                            c.is_completed
+                                                                                ? 'default'
+                                                                                : 'secondary'
+                                                                        }
+                                                                        className={
+                                                                            c.is_completed
+                                                                                ? 'border-emerald-200 bg-emerald-50 text-[11px] text-emerald-700 hover:bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                                                                : 'text-[11px]'
+                                                                        }
+                                                                    >
+                                                                        {c.is_completed
+                                                                            ? '✓ Selesai'
+                                                                            : c.current_stage_label}
                                                                     </Badge>
+                                                                    {c.bast_document && (
+                                                                        <Badge className="border-emerald-200 bg-emerald-50 text-[11px] text-emerald-700 hover:bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
+                                                                            <FileCheck2 className="mr-1 size-3" />{' '}
+                                                                            BAST
+                                                                            Tersimpan
+                                                                        </Badge>
+                                                                    )}
+                                                                </div>
+                                                                {(c.nomor_akta ||
+                                                                    c.completed_at) && (
+                                                                    <div className="text-xs text-muted-foreground">
+                                                                        {c.nomor_akta
+                                                                            ? `No. Akta ${c.nomor_akta}`
+                                                                            : ''}
+                                                                        {c.nomor_akta &&
+                                                                        c.completed_at
+                                                                            ? ' • '
+                                                                            : ''}
+                                                                        {c.completed_at
+                                                                            ? `Selesai ${formatDate(c.completed_at)}`
+                                                                            : ''}
+                                                                    </div>
                                                                 )}
                                                             </div>
                                                             <div className="flex flex-wrap items-center gap-2">
@@ -402,85 +685,166 @@ export default function ArchivesIndex({
                                                                             type="button"
                                                                             size="sm"
                                                                             variant="outline"
-                                                                            onClick={() => handlePrintBast(f, c)}
+                                                                            onClick={() =>
+                                                                                handlePrintBast(
+                                                                                    f,
+                                                                                    c,
+                                                                                )
+                                                                            }
                                                                         >
-                                                                            <Printer className="mr-1.5 size-3.5" /> Cetak BAST
+                                                                            <Printer className="mr-1.5 size-3.5" />{' '}
+                                                                            Cetak
+                                                                            BAST
                                                                         </Button>
                                                                         <Button
                                                                             type="button"
                                                                             size="sm"
                                                                             variant="outline"
-                                                                            onClick={() => openBastUpload(f, c)}
+                                                                            onClick={() =>
+                                                                                openBastUpload(
+                                                                                    f,
+                                                                                    c,
+                                                                                )
+                                                                            }
                                                                         >
                                                                             <Upload className="mr-1.5 size-3.5" />{' '}
-                                                                            {c.bast_document ? 'Perbarui BAST' : 'Unggah BAST'}
+                                                                            {c.bast_document
+                                                                                ? 'Perbarui BAST'
+                                                                                : 'Unggah BAST'}
                                                                         </Button>
-                                                                        {c.bast_document?.file_path && (
-                                                                            <Button asChild size="sm" variant="outline">
+                                                                        {c
+                                                                            .bast_document
+                                                                            ?.file_path && (
+                                                                            <Button
+                                                                                asChild
+                                                                                size="sm"
+                                                                                variant="outline"
+                                                                            >
                                                                                 <a
-                                                                                    href={documentsRoute.download(c.bast_document.id).url}
+                                                                                    href={
+                                                                                        documentsRoute.download(
+                                                                                            c
+                                                                                                .bast_document
+                                                                                                .id,
+                                                                                        )
+                                                                                            .url
+                                                                                    }
                                                                                     target="_blank"
                                                                                     rel="noreferrer"
                                                                                 >
-                                                                                    Lihat BAST
+                                                                                    <Eye className="mr-1.5 size-3.5" />{' '}
+                                                                                    Lihat
+                                                                                    BAST
                                                                                 </a>
                                                                             </Button>
                                                                         )}
                                                                     </>
                                                                 )}
-                                                                <Button asChild size="sm" variant="outline">
-                                                                    <Link href={casesRoute.show(c.id)}>Buka</Link>
+                                                                <Button
+                                                                    asChild
+                                                                    size="sm"
+                                                                    variant="outline"
+                                                                >
+                                                                    <Link
+                                                                        href={casesRoute.show(
+                                                                            c.id,
+                                                                        )}
+                                                                    >
+                                                                        Buka
+                                                                        Berkas
+                                                                    </Link>
                                                                 </Button>
                                                             </div>
                                                         </div>
                                                     ))}
                                                 </div>
                                             )}
-                                            <div className="space-y-1.5">
-                                                <div className="text-xs font-semibold text-muted-foreground uppercase">
-                                                    Dokumen Arsip
+
+                                            <div className="space-y-2">
+                                                <div className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                                                    Dokumen Arsip (
+                                                    {f.documents.length})
                                                 </div>
                                                 {f.documents.length === 0 ? (
-                                                    <p className="text-xs text-muted-foreground">
-                                                        Belum ada dokumen di folder ini.
-                                                    </p>
+                                                    <div className="rounded-xl border border-dashed border-amber-500/25 bg-card/60 px-4 py-4 text-xs text-muted-foreground">
+                                                        Belum ada dokumen di
+                                                        folder ini.
+                                                    </div>
                                                 ) : (
-                                                    f.documents.map((d) => (
-                                                        <div
-                                                            key={d.id}
-                                                            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-sm"
-                                                        >
-                                                            <div>
-                                                                <span className="font-medium">{d.nama}</span>
-                                                                <span className="ml-2 text-xs text-muted-foreground">
-                                                                    {d.kategori} • {formatDate(d.tanggal_dokumen)}
-                                                                </span>
-                                                            </div>
-                                                            <div className="flex items-center gap-2">
-                                                                <Badge
-                                                                    variant={d.is_verified ? 'default' : 'secondary'}
-                                                                    className={
-                                                                        d.is_verified
-                                                                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300'
-                                                                            : ''
-                                                                    }
+                                                    <div className="space-y-2">
+                                                        {f.documents.map(
+                                                            (d) => (
+                                                                <div
+                                                                    key={d.id}
+                                                                    className="flex flex-col gap-2.5 rounded-xl border border-border/80 bg-card px-3.5 py-2.5 text-sm transition-colors hover:border-amber-500/35 hover:bg-amber-500/[0.03] sm:flex-row sm:items-center sm:justify-between"
                                                                 >
-                                                                    {d.is_verified ? '✓ Sudah di-ACC Notaris' : 'Belum'}
-                                                                </Badge>
-                                                                {d.file_path && (
-                                                                    <Button asChild size="sm" variant="outline">
-                                                                        <a
-                                                                            href={documentsRoute.download(d.id).url}
-                                                                            target="_blank"
-                                                                            rel="noreferrer"
+                                                                    <div className="flex min-w-0 items-center gap-3">
+                                                                        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                                                                            <FileText className="size-4" />
+                                                                        </span>
+                                                                        <div className="min-w-0">
+                                                                            <div className="truncate font-medium text-foreground">
+                                                                                {
+                                                                                    d.nama
+                                                                                }
+                                                                            </div>
+                                                                            <div className="text-xs text-muted-foreground">
+                                                                                {
+                                                                                    d.kategori
+                                                                                }{' '}
+                                                                                •{' '}
+                                                                                {formatDate(
+                                                                                    d.tanggal_dokumen,
+                                                                                )}
+                                                                                {d.nomor_dokumen
+                                                                                    ? ` • No. ${d.nomor_dokumen}`
+                                                                                    : ''}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="flex flex-wrap items-center gap-2">
+                                                                        <Badge
+                                                                            variant={
+                                                                                d.is_verified
+                                                                                    ? 'default'
+                                                                                    : 'secondary'
+                                                                            }
+                                                                            className={
+                                                                                d.is_verified
+                                                                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                                                                    : ''
+                                                                            }
                                                                         >
-                                                                            Lihat
-                                                                        </a>
-                                                                    </Button>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                    ))
+                                                                            {d.is_verified
+                                                                                ? '✓ Sudah di-ACC Notaris'
+                                                                                : 'Belum'}
+                                                                        </Badge>
+                                                                        {d.file_path && (
+                                                                            <Button
+                                                                                asChild
+                                                                                size="sm"
+                                                                                variant="outline"
+                                                                            >
+                                                                                <a
+                                                                                    href={
+                                                                                        documentsRoute.download(
+                                                                                            d.id,
+                                                                                        )
+                                                                                            .url
+                                                                                    }
+                                                                                    target="_blank"
+                                                                                    rel="noreferrer"
+                                                                                >
+                                                                                    <Eye className="mr-1.5 size-3.5" />{' '}
+                                                                                    Lihat
+                                                                                </a>
+                                                                            </Button>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            ),
+                                                        )}
+                                                    </div>
                                                 )}
                                             </div>
                                         </div>
@@ -511,33 +875,57 @@ export default function ArchivesIndex({
                         <div className="space-y-1.5">
                             <Label htmlFor="bast-file">
                                 File Scan / Foto BAST (PDF/JPG/PNG/WEBP, maks.{' '}
-                                {Math.round((notarisConfig.maxFileKb || 2048) / 1024)} MB)
+                                {Math.round(
+                                    (notarisConfig.maxFileKb || 2048) / 1024,
+                                )}{' '}
+                                MB)
                             </Label>
                             <Input
                                 id="bast-file"
                                 type="file"
                                 accept=".pdf,.jpg,.jpeg,.png,.webp"
                                 required
-                                onChange={(e) => bastForm.setData('file', e.target.files?.[0] ?? null)}
+                                onChange={(e) =>
+                                    bastForm.setData(
+                                        'file',
+                                        e.target.files?.[0] ?? null,
+                                    )
+                                }
                             />
                             <InputError message={bastForm.errors.file} />
                         </div>
                         <div className="space-y-1.5">
-                            <Label htmlFor="bast-date">Tanggal Serah Terima</Label>
+                            <Label htmlFor="bast-date">
+                                Tanggal Serah Terima
+                            </Label>
                             <Input
                                 id="bast-date"
                                 type="date"
                                 value={bastForm.data.tanggal_dokumen}
-                                onChange={(e) => bastForm.setData('tanggal_dokumen', e.target.value)}
+                                onChange={(e) =>
+                                    bastForm.setData(
+                                        'tanggal_dokumen',
+                                        e.target.value,
+                                    )
+                                }
                             />
-                            <InputError message={bastForm.errors.tanggal_dokumen} />
+                            <InputError
+                                message={bastForm.errors.tanggal_dokumen}
+                            />
                         </div>
                         <div className="space-y-1.5">
-                            <Label htmlFor="bast-notes">Catatan (Opsional)</Label>
+                            <Label htmlFor="bast-notes">
+                                Catatan (Opsional)
+                            </Label>
                             <Input
                                 id="bast-notes"
                                 value={bastForm.data.keterangan}
-                                onChange={(e) => bastForm.setData('keterangan', e.target.value)}
+                                onChange={(e) =>
+                                    bastForm.setData(
+                                        'keterangan',
+                                        e.target.value,
+                                    )
+                                }
                                 placeholder="Catatan serah terima dokumen akta..."
                             />
                             <InputError message={bastForm.errors.keterangan} />
@@ -551,8 +939,15 @@ export default function ArchivesIndex({
                             >
                                 Batal
                             </Button>
-                            <Button type="submit" disabled={bastForm.processing || !bastForm.data.file}>
-                                {bastForm.processing ? 'Mengunggah…' : 'Simpan BAST ke Arsip'}
+                            <Button
+                                type="submit"
+                                disabled={
+                                    bastForm.processing || !bastForm.data.file
+                                }
+                            >
+                                {bastForm.processing
+                                    ? 'Mengunggah…'
+                                    : 'Simpan BAST ke Arsip'}
                             </Button>
                         </DialogFooter>
                     </form>

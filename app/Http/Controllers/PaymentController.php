@@ -5,16 +5,17 @@ namespace App\Http\Controllers;
 use App\Enums\DeedStage;
 use App\Enums\PaymentStatus;
 use App\Enums\PaymentType;
-use App\Models\DeedCase;
+use App\Http\Requests\UpsertPaymentRequest;
 use App\Models\Payment;
 use App\Services\ActivityLogService;
 use App\Services\CodeGeneratorService;
 use App\Services\DeedWorkflowService;
 use App\Services\FileStorageService;
+use App\Services\NotarisStatsService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -26,6 +27,7 @@ class PaymentController extends Controller
         private readonly FileStorageService $fileStorage,
         private readonly ActivityLogService $activityLog,
         private readonly DeedWorkflowService $workflow,
+        private readonly NotarisStatsService $stats,
     ) {}
 
     public function index(Request $request): Response
@@ -33,79 +35,28 @@ class PaymentController extends Controller
         $status = (string) $request->query('status', 'semua');
 
         $payments = Payment::query()
-            ->with(['deedCase.client.company', 'submitter:id,name', 'confirmer:id,name'])
+            ->with([
+                'deedCase:id,client_id,nomor,jenis_akta',
+                'deedCase.client:id,nama,jenis',
+                'deedCase.client.company:id,client_id,nama',
+                'submitter:id,name',
+                'confirmer:id,name',
+            ])
             ->when($status !== 'semua', fn ($q) => $q->where('status', $status))
             ->latest()
             ->get();
 
-        $cases = DeedCase::query()
-            ->with(['client.company'])
-            ->withCount('payments')
-            ->withSum(['payments as terbayar' => fn ($q) => $q->where('status', PaymentStatus::LUNAS)], 'jumlah')
-            ->latest()
-            ->get()
-            ->map(fn (DeedCase $case) => [
-                'id' => $case->id,
-                'nomor' => $case->nomor,
-                'client_name' => $case->client->displayName(),
-                'jenis_akta' => $case->jenis_akta,
-                'biaya' => $case->biaya,
-                'terbayar' => (float) ($case->getAttribute('terbayar') ?? 0),
-                'next_termin' => ((int) $case->getAttribute('payments_count')) + 1,
-            ]);
-
-        $paymentAgg = DB::selectOne(
-            'SELECT
-                (SELECT COALESCE(SUM(biaya), 0) FROM deed_cases) as total_kontrak,
-                COALESCE(SUM(CASE WHEN status = ? THEN jumlah ELSE 0 END), 0) as total_diterima,
-                COALESCE(SUM(CASE WHEN status = ? THEN jumlah ELSE 0 END), 0) as total_menunggu,
-                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as count_menunggu,
-                COALESCE(SUM(CASE WHEN status = ? THEN jumlah ELSE 0 END), 0) as total_belum,
-                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as count_belum
-            FROM payments',
-            [
-                PaymentStatus::LUNAS->value,
-                PaymentStatus::MENUNGGU->value,
-                PaymentStatus::MENUNGGU->value,
-                PaymentStatus::BELUM->value,
-                PaymentStatus::BELUM->value,
-            ],
-        );
-
-        $summary = [
-            'total_kontrak' => (float) ($paymentAgg?->total_kontrak ?? 0),
-            'total_diterima' => (float) ($paymentAgg?->total_diterima ?? 0),
-            'total_menunggu' => (float) ($paymentAgg?->total_menunggu ?? 0),
-            'count_menunggu' => (int) ($paymentAgg?->count_menunggu ?? 0),
-            'total_belum' => (float) ($paymentAgg?->total_belum ?? 0),
-            'count_belum' => (int) ($paymentAgg?->count_belum ?? 0),
-        ];
-
         return Inertia::render('payments/index', [
             'payments' => $payments,
-            'cases' => $cases,
-            'summary' => $summary,
+            'cases' => $this->stats->casePaymentOptions(),
+            'summary' => $this->stats->paymentSummary(),
             'filters' => ['status' => $status],
         ]);
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(UpsertPaymentRequest $request): RedirectResponse
     {
-        $maxKb = (int) config('notaris.max_file_kb', 2048);
-
-        $data = $request->validate([
-            'deed_case_id' => ['required', 'exists:deed_cases,id'],
-            'termin_ke' => ['required', 'integer', 'min:1'],
-            'payment_type' => ['required', 'in:dp_50,pelunasan,termin_lain'],
-            'keterangan' => ['nullable', 'string', 'max:255'],
-            'jumlah' => ['required', 'numeric', 'min:1'],
-            'jatuh_tempo' => ['nullable', 'date'],
-            'tanggal_bayar' => ['nullable', 'date'],
-            'metode' => ['required', 'string', 'max:40'],
-            'no_referensi' => ['nullable', 'string', 'max:100'],
-            'mark_as_paid' => ['boolean'],
-            'bukti' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png,webp', "max:{$maxKb}"],
-        ]);
+        $data = $request->validated();
 
         $fileMeta = [];
         if ($request->hasFile('bukti')) {
@@ -145,21 +96,15 @@ class PaymentController extends Controller
             : "Tagihan {$payment->no_inv} berhasil dibuat.");
     }
 
-    public function update(Request $request, Payment $payment): RedirectResponse
+    public function update(UpsertPaymentRequest $request, Payment $payment): RedirectResponse
     {
-        $maxKb = (int) config('notaris.max_file_kb', 2048);
+        if ($payment->status === PaymentStatus::LUNAS) {
+            throw ValidationException::withMessages([
+                'status' => 'Pembayaran yang sudah Lunas (ACC Notaris) tidak dapat diubah. Batalkan ACC terlebih dahulu jika perlu koreksi.',
+            ]);
+        }
 
-        $data = $request->validate([
-            'termin_ke' => ['required', 'integer', 'min:1'],
-            'payment_type' => ['required', 'in:dp_50,pelunasan,termin_lain'],
-            'keterangan' => ['nullable', 'string', 'max:255'],
-            'jumlah' => ['required', 'numeric', 'min:1'],
-            'jatuh_tempo' => ['nullable', 'date'],
-            'tanggal_bayar' => ['nullable', 'date'],
-            'metode' => ['required', 'string', 'max:40'],
-            'no_referensi' => ['nullable', 'string', 'max:100'],
-            'bukti' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png,webp', "max:{$maxKb}"],
-        ]);
+        $data = $request->validated();
 
         if ($request->hasFile('bukti')) {
             $this->fileStorage->delete($payment->bukti_disk, $payment->bukti_path);
@@ -197,6 +142,12 @@ class PaymentController extends Controller
 
     public function submitProof(Request $request, Payment $payment): RedirectResponse
     {
+        if ($payment->status === PaymentStatus::LUNAS) {
+            throw ValidationException::withMessages([
+                'status' => 'Pembayaran yang sudah Lunas (ACC Notaris) tidak dapat diubah.',
+            ]);
+        }
+
         $maxKb = (int) config('notaris.max_file_kb', 2048);
 
         $data = $request->validate([
@@ -254,14 +205,17 @@ class PaymentController extends Controller
 
         $case = $payment->deedCase;
         if ($case && ! $case->is_completed) {
-            $shouldAdvanceDp = $case->current_stage === DeedStage::PEMBAYARAN_DP
-                && in_array($payment->payment_type, [PaymentType::DP_50, PaymentType::TERMIN_LAIN], true);
+            $isDpOrTermin = in_array($payment->payment_type, [PaymentType::DP_50, PaymentType::TERMIN_LAIN], true);
+            $shouldAdvanceDp = $case->current_stage === DeedStage::PEMBAYARAN_DP && $isDpOrTermin;
+            $shouldAdvanceVerifiedStage3 = $case->current_stage === DeedStage::VERIFIKASI_DOKUMEN
+                && $isDpOrTermin
+                && $case->doc_approval_status === 'approved';
 
             $shouldCompleteFinal = $case->current_stage === DeedStage::PELUNASAN_BIAYA
                 && $payment->payment_type === PaymentType::PELUNASAN
                 && ! $case->payments()->where('status', PaymentStatus::MENUNGGU)->exists();
 
-            if ($shouldAdvanceDp || $shouldCompleteFinal) {
+            if ($shouldAdvanceDp || $shouldAdvanceVerifiedStage3 || $shouldCompleteFinal) {
                 $this->workflow->advanceStage(
                     $case,
                     $request->user(),
@@ -291,6 +245,23 @@ class PaymentController extends Controller
         ]);
 
         $this->activityLog->record($request->user(), 'Tolak pembayaran', $payment, "{$payment->no_inv}: {$data['notes']}");
+
+        $case = $payment->deedCase;
+        if (
+            $case
+            && ! $case->is_completed
+            && $case->current_stage === DeedStage::VERIFIKASI_DOKUMEN
+            && in_array($payment->payment_type, [PaymentType::DP_50, PaymentType::TERMIN_LAIN], true)
+        ) {
+            $hasOtherValidDp = $case->payments()
+                ->whereIn('payment_type', [PaymentType::DP_50->value, PaymentType::TERMIN_LAIN->value])
+                ->whereIn('status', [PaymentStatus::MENUNGGU->value, PaymentStatus::LUNAS->value])
+                ->exists();
+
+            if (! $hasOtherValidDp) {
+                $this->workflow->revertStage($case, $request->user(), "Pembayaran DP ditolak Notaris: {$data['notes']}");
+            }
+        }
 
         return back()->with('success', "Pembayaran {$payment->no_inv} ditolak dengan catatan.");
     }

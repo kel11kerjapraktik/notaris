@@ -3,12 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Enums\DraftStatus;
-use App\Models\Client;
-use App\Models\DeedCase;
+use App\Http\Requests\UpsertDocumentRequest;
 use App\Models\Document;
 use App\Services\ActivityLogService;
 use App\Services\DeedWorkflowService;
 use App\Services\FileStorageService;
+use App\Services\NotarisStatsService;
+use App\Support\DatabaseSearch;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -22,6 +23,7 @@ class DocumentController extends Controller
         private readonly FileStorageService $fileStorage,
         private readonly ActivityLogService $activityLog,
         private readonly DeedWorkflowService $workflow,
+        private readonly NotarisStatsService $stats,
     ) {}
 
     public function index(Request $request): Response
@@ -30,35 +32,45 @@ class DocumentController extends Controller
         $kategori = (string) $request->query('kategori', 'semua');
 
         $documents = Document::query()
-            ->with(['client.company', 'deedCase:id,nomor,jenis_akta', 'verifier:id,name'])
+            ->select([
+                'id',
+                'client_id',
+                'deed_case_id',
+                'kategori',
+                'nama',
+                'nomor_dokumen',
+                'tanggal_dokumen',
+                'keterangan',
+                'file_path',
+                'file_name',
+                'mime_type',
+                'is_complete_checked',
+                'is_verified',
+                'is_rejected',
+                'catatan_notaris',
+                'verified_by',
+                'created_at',
+            ])
+            ->with([
+                'client:id,nama,jenis',
+                'client.company:id,client_id,nama',
+                'deedCase:id,nomor,jenis_akta',
+                'verifier:id,name',
+            ])
             ->when($kategori !== 'semua', fn ($q) => $q->where('kategori', $kategori))
             ->when($search !== '', function ($query) use ($search) {
-                $like = '%'.$search.'%';
-                $query->where(function ($q) use ($like) {
-                    $q->where('nama', 'ilike', $like)
-                        ->orWhere('nomor_dokumen', 'ilike', $like)
-                        ->orWhere('kategori', 'ilike', $like)
-                        ->orWhereHas('client', fn ($cq) => $cq->where('nama', 'ilike', $like));
+                $query->where(function ($q) use ($search) {
+                    DatabaseSearch::orWhereLikeAny($q, ['nama', 'nomor_dokumen', 'kategori'], $search)
+                        ->orWhereHas('client', fn ($cq) => DatabaseSearch::whereLike($cq, 'nama', $search));
                 });
             })
             ->latest()
             ->get();
 
-        $clients = Client::with('company')->orderBy('nama')->get()->map(fn (Client $c) => [
-            'id' => $c->id,
-            'label' => $c->kode.' — '.$c->displayName(),
-        ]);
-
-        $cases = DeedCase::orderByDesc('id')->get()->map(fn (DeedCase $dc) => [
-            'id' => $dc->id,
-            'client_id' => $dc->client_id,
-            'label' => $dc->nomor.' • '.$dc->jenis_akta,
-        ]);
-
         return Inertia::render('documents/index', [
             'documents' => $documents,
-            'clients' => $clients,
-            'cases' => $cases,
+            'clients' => $this->stats->clientOptions(),
+            'cases' => $this->stats->caseOptions(),
             'filters' => [
                 'search' => $search,
                 'kategori' => $kategori,
@@ -66,23 +78,9 @@ class DocumentController extends Controller
         ]);
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(UpsertDocumentRequest $request): RedirectResponse
     {
-        $maxKb = (int) config('notaris.max_file_kb', 2048);
-
-        $data = $request->validate([
-            'client_id' => ['required', 'exists:clients,id'],
-            'deed_case_id' => ['nullable', 'exists:deed_cases,id'],
-            'kategori' => ['required', 'string', 'max:64'],
-            'nama' => ['required', 'string', 'max:255'],
-            'nomor_dokumen' => ['nullable', 'string', 'max:100'],
-            'tanggal_dokumen' => ['nullable', 'date'],
-            'keterangan' => ['nullable', 'string', 'max:2000'],
-            'is_complete_checked' => ['boolean'],
-            'submit_doc_approval' => ['boolean'],
-            'submit_draft_approval' => ['boolean'],
-            'file' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png,webp', "max:{$maxKb}"],
-        ]);
+        $data = $request->validated();
 
         $fileMeta = [];
         if ($request->hasFile('file')) {
@@ -137,23 +135,9 @@ class DocumentController extends Controller
         return back()->with('success', "Dokumen \"{$doc->nama}\" berhasil disimpan.");
     }
 
-    public function update(Request $request, Document $document): RedirectResponse
+    public function update(UpsertDocumentRequest $request, Document $document): RedirectResponse
     {
-        $maxKb = (int) config('notaris.max_file_kb', 2048);
-
-        $data = $request->validate([
-            'client_id' => ['required', 'exists:clients,id'],
-            'deed_case_id' => ['nullable', 'exists:deed_cases,id'],
-            'kategori' => ['required', 'string', 'max:64'],
-            'nama' => ['required', 'string', 'max:255'],
-            'nomor_dokumen' => ['nullable', 'string', 'max:100'],
-            'tanggal_dokumen' => ['nullable', 'date'],
-            'keterangan' => ['nullable', 'string', 'max:2000'],
-            'is_complete_checked' => ['boolean'],
-            'submit_doc_approval' => ['boolean'],
-            'submit_draft_approval' => ['boolean'],
-            'file' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png,webp', "max:{$maxKb}"],
-        ]);
+        $data = $request->validated();
 
         if ($request->hasFile('file')) {
             $this->fileStorage->delete($document->file_disk, $document->file_path);
@@ -164,6 +148,9 @@ class DocumentController extends Controller
                 'file_name' => $stored['name'],
                 'mime_type' => $stored['mime'],
                 'file_size' => $stored['size'],
+                'is_verified' => false,
+                'verified_by' => null,
+                'verified_at' => null,
             ]);
         }
 
@@ -218,6 +205,16 @@ class DocumentController extends Controller
         $detail = $document->nama.(! empty($data['notes']) ? ": {$data['notes']}" : '');
         $this->activityLog->record($request->user(), 'ACC / Verifikasi dokumen', $document, $detail);
 
+        $targetCase = $caseId ? DeedCase::find($caseId) : null;
+        if (
+            $targetCase
+            && ! $targetCase->is_completed
+            && $targetCase->doc_approval_status !== 'approved'
+            && $this->workflow->allCaseDocumentsVerified($targetCase)
+        ) {
+            $this->workflow->approveDocVerification($targetCase, $request->user(), $data['notes'] ?? null);
+        }
+
         return back()->with('success', "Dokumen \"{$document->nama}\" di-ACC & dinyatakan sah.");
     }
 
@@ -238,6 +235,15 @@ class DocumentController extends Controller
         ]);
 
         $this->activityLog->record($request->user(), 'Tolak dokumen', $document, "{$document->nama}: {$data['notes']}");
+
+        $targetCase = $document->deedCase;
+        if (
+            $targetCase
+            && ! $targetCase->is_completed
+            && in_array($targetCase->doc_approval_status, ['pending_approval', 'approved'], true)
+        ) {
+            $this->workflow->rejectDocVerification($targetCase, $request->user(), $data['notes']);
+        }
 
         return back()->with('success', "Dokumen \"{$document->nama}\" ditolak dengan catatan.");
     }

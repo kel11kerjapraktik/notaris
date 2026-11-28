@@ -6,10 +6,15 @@ import AppLayout from '@/layouts/app-layout';
 import AuthLayout from '@/layouts/auth-layout';
 import SettingsLayout from '@/layouts/settings/layout';
 
-const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
+const appName = import.meta.env.VITE_APP_NAME || 'Notaris Suite';
 
 void createInertiaApp({
-    title: (title) => (title ? `${title} - ${appName}` : appName),
+    title: (title) =>
+        !title
+            ? appName
+            : title.includes(appName)
+              ? title
+              : `${title} — ${appName}`,
     layout: (name) => {
         switch (true) {
             case name === 'welcome':
@@ -33,7 +38,7 @@ void createInertiaApp({
     },
     progress: {
         delay: 100,
-        color: '#d97706',
+        color: '#c59b27',
         includeCSS: true,
         showSpinner: true,
     },

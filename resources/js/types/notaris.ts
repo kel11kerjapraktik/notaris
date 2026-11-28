@@ -164,7 +164,11 @@ export type DeedCaseDetail = {
     current_stage: string;
     is_completed: boolean;
     completed_at: string | null;
-    draft_status: 'none' | 'pending_approval' | 'revision_requested' | 'approved';
+    draft_status:
+        | 'none'
+        | 'pending_approval'
+        | 'revision_requested'
+        | 'approved';
     draft_approver?: { id: number; name: string } | null;
     draft_approved_at: string | null;
     doc_approval_status: 'none' | 'pending_approval' | 'rejected' | 'approved';

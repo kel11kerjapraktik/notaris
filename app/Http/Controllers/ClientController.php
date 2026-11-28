@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\UpsertClientRequest;
 use App\Models\Client;
 use App\Models\DeedCase;
 use App\Models\Document;
@@ -9,10 +10,12 @@ use App\Services\ActivityLogService;
 use App\Services\CodeGeneratorService;
 use App\Services\DeedWorkflowService;
 use App\Services\FileStorageService;
+use App\Services\NotarisStatsService;
+use App\Support\DatabaseSearch;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Gate;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -23,6 +26,7 @@ class ClientController extends Controller
         private readonly ActivityLogService $activityLog,
         private readonly FileStorageService $fileStorage,
         private readonly DeedWorkflowService $workflow,
+        private readonly NotarisStatsService $stats,
     ) {}
 
     public function index(Request $request): Response
@@ -34,8 +38,9 @@ class ClientController extends Controller
         }
 
         $clients = Client::query()
+            ->select(['id', 'kode', 'jenis', 'nama', 'nik', 'telepon', 'email', 'created_at'])
             ->with([
-                'company',
+                'company:id,client_id,nama',
                 'deedCases' => fn ($q) => $q->select(['id', 'client_id', 'nomor', 'current_stage', 'is_completed'])->latest('id'),
             ])
             ->withCount([
@@ -45,14 +50,9 @@ class ClientController extends Controller
                 'deedCases as completed_cases_count' => fn ($q) => $q->where('is_completed', true),
             ])
             ->when($search !== '', function ($query) use ($search) {
-                $like = '%'.$search.'%';
-                $query->where(function ($q) use ($like) {
-                    $q->where('kode', 'ilike', $like)
-                        ->orWhere('nama', 'ilike', $like)
-                        ->orWhere('nik', 'ilike', $like)
-                        ->orWhere('telepon', 'ilike', $like)
-                        ->orWhere('email', 'ilike', $like)
-                        ->orWhereHas('company', fn ($cq) => $cq->where('nama', 'ilike', $like));
+                $query->where(function ($q) use ($search) {
+                    DatabaseSearch::orWhereLikeAny($q, ['kode', 'nama', 'nik', 'telepon', 'email'], $search)
+                        ->orWhereHas('company', fn ($cq) => DatabaseSearch::whereLike($cq, 'nama', $search));
                 });
             }, function ($query) use ($status) {
                 if ($status === 'selesai') {
@@ -95,24 +95,9 @@ class ClientController extends Controller
                 ];
             });
 
-        $prosesCount = Client::query()
-            ->where(function ($q) {
-                $q->whereDoesntHave('deedCases')
-                    ->orWhereHas('deedCases', fn ($cq) => $cq->where('is_completed', false));
-            })
-            ->count();
-
-        $selesaiCount = Client::query()
-            ->whereHas('deedCases')
-            ->whereDoesntHave('deedCases', fn ($q) => $q->where('is_completed', false))
-            ->count();
-
         return Inertia::render('clients/index', [
             'clients' => $clients,
-            'counts' => [
-                'proses' => $prosesCount,
-                'selesai' => $selesaiCount,
-            ],
+            'counts' => $this->stats->clientTabCounts(),
             'filters' => [
                 'search' => $search,
                 'status' => $status,
@@ -128,16 +113,19 @@ class ClientController extends Controller
         ]);
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(UpsertClientRequest $request): RedirectResponse
     {
-        $validated = $this->validateClient($request);
+        $validated = $request->sections();
 
         [$client, $deedCase] = DB::transaction(function () use ($validated, $request): array {
-            $kode = trim((string) ($validated['client']['kode'] ?? ''));
+            $requestedKode = trim((string) ($validated['client']['kode'] ?? ''));
+            $kode = ($requestedKode !== '' && ! Client::where('kode', $requestedKode)->exists())
+                ? $requestedKode
+                : $this->codeGenerator->nextClientCode();
 
             $client = Client::create([
                 ...$validated['client'],
-                'kode' => $kode !== '' ? $kode : $this->codeGenerator->nextClientCode(),
+                'kode' => $kode,
                 'created_by' => $request->user()->id,
             ]);
 
@@ -193,9 +181,9 @@ class ClientController extends Controller
         ]);
     }
 
-    public function update(Request $request, Client $client): RedirectResponse
+    public function update(UpsertClientRequest $request, Client $client): RedirectResponse
     {
-        $validated = $this->validateClient($request, $client);
+        $validated = $request->sections();
 
         DB::transaction(function () use ($validated, $client, $request): void {
             $kode = trim((string) ($validated['client']['kode'] ?? ''));
@@ -216,7 +204,7 @@ class ClientController extends Controller
             $defaultJenis = $client->jenis === 'perusahaan' ? 'Akta Pendirian PT' : 'Lainnya';
             $jenisAkta = $validated['case']['jenis_akta'] ?: ($latestCase?->jenis_akta ?? $defaultJenis);
 
-            if ($latestCase) {
+            if ($latestCase && ! $latestCase->is_completed) {
                 $isBadanUsaha = collect(config('notaris.jenis_akta', []))
                     ->firstWhere('label', $jenisAkta)['is_badan_usaha'] ?? false;
 
@@ -226,7 +214,7 @@ class ClientController extends Controller
                     'biaya' => $validated['case']['biaya'] ?? $latestCase->biaya,
                     'target_selesai' => $validated['case']['target_selesai'] ?? $latestCase->target_selesai,
                 ]);
-            } else {
+            } elseif (! $latestCase) {
                 $latestCase = $this->workflow->createCase([
                     'client_id' => $client->id,
                     'jenis_akta' => $jenisAkta,
@@ -238,7 +226,6 @@ class ClientController extends Controller
             }
 
             $this->storeAttachments($request, $client, $latestCase);
-            $this->workflow->resubmitRevisionIfNeeded($latestCase, $request->user());
 
             $this->activityLog->record($request->user(), 'Ubah data klien', $client, "{$client->kode} — {$client->nama}");
         });
@@ -250,103 +237,32 @@ class ClientController extends Controller
 
     public function destroy(Request $request, Client $client): RedirectResponse
     {
+        Gate::authorize('notaris');
+
         $label = "{$client->kode} — {$client->displayName()}";
 
-        // Clean up attached files from storage before deleting database rows
+        // Collect file paths first, delete DB rows atomically, then purge files from storage
         $client->load(['documents', 'deedCases.payments']);
+        $filesToDelete = [];
         foreach ($client->documents as $doc) {
-            $this->fileStorage->delete($doc->file_disk, $doc->file_path);
+            $filesToDelete[] = [$doc->file_disk, $doc->file_path];
         }
         foreach ($client->deedCases as $case) {
             foreach ($case->payments as $payment) {
-                $this->fileStorage->delete($payment->bukti_disk, $payment->bukti_path);
+                $filesToDelete[] = [$payment->bukti_disk, $payment->bukti_path];
             }
         }
 
-        $client->delete();
+        DB::transaction(function () use ($client, $request, $label): void {
+            $client->delete();
+            $this->activityLog->record($request->user(), 'Hapus klien', null, $label);
+        });
 
-        $this->activityLog->record($request->user(), 'Hapus klien', null, $label);
+        foreach ($filesToDelete as [$disk, $path]) {
+            $this->fileStorage->delete($disk, $path);
+        }
 
         return back()->with('success', "Data klien {$label} beserta berkas terkait berhasil dihapus.");
-    }
-
-    /**
-     * @return array{client: array<string, mixed>, company: array<string, mixed>, case: array<string, mixed>}
-     */
-    private function validateClient(Request $request, ?Client $client = null): array
-    {
-        $maxKb = (int) config('notaris.max_file_kb', 2048);
-
-        $data = $request->validate([
-            'kode' => ['nullable', 'string', 'max:24', Rule::unique('clients', 'kode')->ignore($client?->id)],
-            'jenis' => ['required', 'in:pribadi,perusahaan'],
-            'nama' => ['required', 'string', 'max:255'],
-            'nik' => ['nullable', 'string', 'max:32'],
-            'npwp' => ['nullable', 'string', 'max:32'],
-            'tempat_lahir' => ['nullable', 'string', 'max:120'],
-            'tanggal_lahir' => ['nullable', 'date'],
-            'jenis_kelamin' => ['nullable', 'string', 'max:20'],
-            'agama' => ['nullable', 'string', 'max:30'],
-            'kewarganegaraan' => ['nullable', 'string', 'max:10'],
-            'status_perkawinan' => ['nullable', 'string', 'max:30'],
-            'pekerjaan' => ['nullable', 'string', 'max:120'],
-            'nama_ibu_kandung' => ['nullable', 'string', 'max:255'],
-            'telepon' => ['nullable', 'string', 'max:32'],
-            'email' => ['nullable', 'email', 'max:255'],
-            'alamat' => ['nullable', 'string', 'max:1000'],
-            'rt_rw' => ['nullable', 'string', 'max:20'],
-            'kelurahan' => ['nullable', 'string', 'max:120'],
-            'kecamatan' => ['nullable', 'string', 'max:120'],
-            'kota' => ['nullable', 'string', 'max:120'],
-            'provinsi' => ['nullable', 'string', 'max:120'],
-            'kode_pos' => ['nullable', 'string', 'max:12'],
-            'catatan' => ['nullable', 'string', 'max:2000'],
-            'company' => ['nullable', 'array'],
-            'company.nama' => ['nullable', 'string', 'max:255'],
-            'company.bentuk_badan' => ['nullable', 'string', 'max:64'],
-            'company.jabatan' => ['nullable', 'string', 'max:120'],
-            'company.bidang_usaha' => ['nullable', 'string', 'max:255'],
-            'company.kbli' => ['nullable', 'string', 'max:64'],
-            'company.tahun_berdiri' => ['nullable', 'string', 'max:10'],
-            'company.npwp' => ['nullable', 'string', 'max:32'],
-            'company.nib' => ['nullable', 'string', 'max:64'],
-            'company.sk_kemenkumham' => ['nullable', 'string', 'max:255'],
-            'company.alamat' => ['nullable', 'string', 'max:1000'],
-            'company.kota' => ['nullable', 'string', 'max:120'],
-            'company.provinsi' => ['nullable', 'string', 'max:120'],
-            'company.kode_pos' => ['nullable', 'string', 'max:12'],
-            'company.telepon' => ['nullable', 'string', 'max:32'],
-            'company.email' => ['nullable', 'email', 'max:255'],
-            'company.modal_dasar' => ['nullable', 'numeric', 'min:0'],
-            'company.modal_ditempatkan' => ['nullable', 'numeric', 'min:0'],
-            'company.modal_disetor' => ['nullable', 'numeric', 'min:0'],
-            'company.jumlah_saham' => ['nullable', 'integer', 'min:0'],
-            'company.nominal_saham' => ['nullable', 'numeric', 'min:0'],
-            'company.direktur' => ['nullable', 'string', 'max:255'],
-            'company.komisaris' => ['nullable', 'string', 'max:255'],
-            'attachments' => ['nullable', 'array'],
-            'attachments.*.kategori' => ['required_with:attachments.*.file', 'string', 'max:64'],
-            'attachments.*.nama' => ['required_with:attachments.*.file', 'string', 'max:255'],
-            'attachments.*.nomor_dokumen' => ['nullable', 'string', 'max:100'],
-            'attachments.*.file' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png,webp', "max:{$maxKb}"],
-            'jenis_akta' => ['nullable', 'string', 'max:255'],
-            'biaya' => ['nullable', 'numeric', 'min:0'],
-            'target_selesai' => ['nullable', 'date'],
-        ]);
-
-        $company = $data['company'] ?? [];
-        $case = [
-            'jenis_akta' => $data['jenis_akta'] ?? null,
-            'biaya' => $data['biaya'] ?? 0,
-            'target_selesai' => $data['target_selesai'] ?? null,
-        ];
-        unset($data['company'], $data['attachments'], $data['jenis_akta'], $data['biaya'], $data['target_selesai']);
-
-        return [
-            'client' => $data,
-            'company' => $company,
-            'case' => $case,
-        ];
     }
 
     private function storeAttachments(Request $request, Client $client, ?DeedCase $deedCase = null): void
@@ -386,7 +302,7 @@ class ClientController extends Controller
         }
 
         if ($uploadedCount > 0 && $deedCase) {
-            $this->workflow->resubmitRevisionIfNeeded($deedCase, $request->user());
+            $this->workflow->resubmitRevisionIfNeeded($deedCase, $request->user(), includeDraft: false);
         }
     }
 }

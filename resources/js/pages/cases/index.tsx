@@ -1,6 +1,8 @@
 import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
-import { Download, Plus, Search } from 'lucide-react';
+import { Download, Plus } from 'lucide-react';
 import { useState } from 'react';
+import { CurrencyInput } from '@/components/notaris/currency-input';
+import { SearchInput } from '@/components/notaris/search-input';
 import { StageBadge } from '@/components/notaris/stage-badge';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -13,6 +15,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useDebouncedCallback } from '@/hooks/use-debounced-callback';
 import AppLayout from '@/layouts/app-layout';
 import { exportCsv, formatDate, formatRupiah } from '@/lib/format';
 import casesRoute from '@/routes/cases';
@@ -72,8 +75,13 @@ export default function CasesIndex({
         const params: Record<string, string> = {};
         if (nextSearch) params.search = nextSearch;
         if (nextStage !== 'semua') params.stage = nextStage;
-        router.get(casesRoute.index().url, params, { preserveState: true, replace: true });
+        router.get(casesRoute.index().url, params, {
+            preserveState: true,
+            replace: true,
+        });
     };
+
+    const debouncedApplyFilter = useDebouncedCallback(applyFilter, 300);
 
     const handleCreate = (e: React.FormEvent) => {
         e.preventDefault();
@@ -89,7 +97,9 @@ export default function CasesIndex({
                 NoBerkas: c.nomor,
                 Klien: c.client_name,
                 JenisAkta: c.jenis_akta,
-                Tahapan: c.is_completed ? 'Selesai & Lunas' : `${c.current_stage_order}. ${c.current_stage_label}`,
+                Tahapan: c.is_completed
+                    ? 'Selesai & Lunas'
+                    : `${c.current_stage_order}. ${c.current_stage_label}`,
                 Biaya: c.biaya,
                 Terbayar: c.terbayar,
                 Sisa: Math.max(0, c.biaya - c.terbayar),
@@ -100,50 +110,67 @@ export default function CasesIndex({
     };
 
     const selectCls =
-        'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none';
+        'flex h-9 w-full rounded-xl border border-input bg-background/85 px-3 py-1 text-sm text-foreground shadow-xs transition-[color,box-shadow,border-color] focus-visible:border-amber-500/60 focus-visible:ring-2 focus-visible:ring-amber-500/20 focus-visible:outline-none';
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Monitoring Akta — Notaris Suite" />
             <div className="flex flex-1 flex-col gap-5 p-4 md:p-6">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                        <h1 className="text-xl font-bold tracking-tight">Monitoring Proses Akta</h1>
-                        <p className="text-sm text-muted-foreground">
-                            Pantau 10 tahapan akta dari pengisian biodata klien hingga pelunasan biaya.
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <Button variant="outline" size="sm" onClick={handleExport} disabled={cases.length === 0}>
-                            <Download className="mr-1.5 size-4" /> Ekspor CSV
-                        </Button>
-                        <Button
-                            size="sm"
-                            onClick={() => setCreateOpen(true)}
-                            disabled={clients.length === 0}
-                            title={clients.length === 0 ? 'Tambahkan data klien terlebih dahulu' : undefined}
-                        >
-                            <Plus className="mr-1.5 size-4" /> Berkas Baru
-                        </Button>
+                <div className="relative overflow-hidden rounded-2xl border border-amber-500/20 bg-gradient-to-br from-card via-card to-amber-50/45 p-5 shadow-xs dark:to-amber-950/20">
+                    <div className="pointer-events-none absolute -top-14 -right-14 size-44 rounded-full bg-amber-400/15 blur-3xl dark:bg-amber-500/10" />
+                    <div className="relative flex flex-wrap items-center justify-between gap-4">
+                        <div className="space-y-1">
+                            <p className="text-[11px] font-semibold tracking-[0.2em] text-amber-700 uppercase dark:text-amber-400/90">
+                                Monitoring 10 Tahapan
+                            </p>
+                            <h1 className="font-serif text-2xl font-bold tracking-tight text-foreground">
+                                Monitoring Proses Akta
+                            </h1>
+                            <p className="text-sm text-muted-foreground">
+                                Pantau 10 tahapan akta dari pengisian biodata
+                                klien hingga pelunasan biaya.
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleExport}
+                                disabled={cases.length === 0}
+                            >
+                                <Download className="mr-1.5 size-4" /> Ekspor
+                                CSV
+                            </Button>
+                            <Button
+                                size="sm"
+                                onClick={() => setCreateOpen(true)}
+                                disabled={clients.length === 0}
+                                title={
+                                    clients.length === 0
+                                        ? 'Tambahkan data klien terlebih dahulu'
+                                        : undefined
+                                }
+                            >
+                                <Plus className="mr-1.5 size-4" /> Berkas Baru
+                            </Button>
+                        </div>
                     </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
-                    <div className="relative flex-1 sm:max-w-xs">
-                        <Search className="absolute top-2.5 left-3 size-4 text-muted-foreground" />
-                        <Input
-                            type="search"
-                            placeholder="Cari nomor / klien / jenis…"
-                            value={search}
-                            onChange={(e) => {
-                                setSearch(e.target.value);
-                                applyFilter(e.target.value, stage);
-                            }}
-                            className="pl-9"
-                        />
-                    </div>
+                <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-amber-500/15 bg-card/85 p-3 shadow-xs">
+                    <SearchInput
+                        value={search}
+                        onChange={(val) => {
+                            setSearch(val);
+                            debouncedApplyFilter(val, stage);
+                        }}
+                        placeholder="Cari nomor / klien / jenis…"
+                        ariaLabel="Cari berkas akta berdasarkan nomor, klien, atau jenis"
+                        className="flex-1 sm:max-w-xs"
+                    />
                     <select
                         className={`${selectCls} sm:max-w-64`}
+                        aria-label="Filter tahapan akta"
                         value={stage}
                         onChange={(e) => {
                             setStage(e.target.value);
@@ -156,18 +183,41 @@ export default function CasesIndex({
                                 {s.order}. {s.label}
                             </option>
                         ))}
-                        <option value="selesai">✓ Seluruh Tahapan Selesai (Arsip)</option>
+                        <option value="selesai">
+                            ✓ Seluruh Tahapan Selesai (Arsip)
+                        </option>
                     </select>
-                    <Badge variant="secondary">{cases.length} berkas</Badge>
+                    {(search !== '' || stage !== 'semua') && (
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                                setSearch('');
+                                setStage('semua');
+                                applyFilter('', 'semua');
+                            }}
+                        >
+                            Reset Filter
+                        </Button>
+                    )}
+                    <Badge
+                        variant="secondary"
+                        className="border border-amber-500/20 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+                    >
+                        {cases.length} berkas
+                    </Badge>
                 </div>
 
                 {search && (
                     <div className="text-xs text-muted-foreground">
-                        Menampilkan hasil pencarian dari <strong>seluruh berkas</strong> (termasuk berkas yang sudah selesai &amp; diarsipkan).
+                        Menampilkan hasil pencarian dari{' '}
+                        <strong>seluruh berkas</strong> (termasuk berkas yang
+                        sudah selesai &amp; diarsipkan).
                     </div>
                 )}
 
-                <div className="overflow-hidden rounded-xl border border-sidebar-border/70 bg-card dark:border-sidebar-border">
+                <div className="overflow-hidden rounded-2xl border border-amber-500/20 bg-card shadow-xs">
                     {cases.length === 0 ? (
                         <div className="py-12 text-center text-sm text-muted-foreground">
                             {clients.length === 0
@@ -178,61 +228,114 @@ export default function CasesIndex({
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm">
                                 <thead>
-                                    <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
-                                        <th className="px-4 py-3 font-medium">No. Berkas</th>
-                                        <th className="px-4 py-3 font-medium">Klien</th>
-                                        <th className="px-4 py-3 font-medium">Jenis Akta</th>
-                                        <th className="px-4 py-3 font-medium">Progres</th>
-                                        <th className="px-4 py-3 font-medium">Status Tahapan</th>
-                                        <th className="px-4 py-3 font-medium">Keuangan</th>
-                                        <th className="px-4 py-3 text-right font-medium">Aksi</th>
+                                    <tr className="border-b border-amber-500/15 bg-amber-500/5 text-left text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+                                        <th className="px-4 py-3">
+                                            No. Berkas
+                                        </th>
+                                        <th className="px-4 py-3">Klien</th>
+                                        <th className="px-4 py-3">
+                                            Jenis Akta
+                                        </th>
+                                        <th className="px-4 py-3">Progres</th>
+                                        <th className="px-4 py-3 font-medium">
+                                            Status Tahapan
+                                        </th>
+                                        <th className="px-4 py-3 font-medium">
+                                            Keuangan
+                                        </th>
+                                        <th className="px-4 py-3 text-right font-medium">
+                                            Aksi
+                                        </th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y">
                                     {cases.map((c) => {
                                         const pct = c.is_completed
                                             ? 100
-                                            : Math.round((c.current_stage_order / notarisConfig.stages.length) * 100);
-                                        const sisa = Math.max(0, Number(c.biaya) - Number(c.terbayar));
+                                            : Math.round(
+                                                  (c.current_stage_order /
+                                                      notarisConfig.stages
+                                                          .length) *
+                                                      100,
+                                              );
+                                        const sisa = Math.max(
+                                            0,
+                                            Number(c.biaya) -
+                                                Number(c.terbayar),
+                                        );
                                         return (
-                                            <tr key={c.id} className="hover:bg-muted/30">
+                                            <tr
+                                                key={c.id}
+                                                className="hover:bg-muted/30"
+                                            >
                                                 <td className="px-4 py-3">
-                                                    <div className="font-semibold">{c.nomor}</div>
+                                                    <div className="font-semibold">
+                                                        {c.nomor}
+                                                    </div>
                                                     <div className="text-xs text-muted-foreground">
-                                                        {formatDate(c.created_at)}
+                                                        {formatDate(
+                                                            c.created_at,
+                                                        )}
                                                     </div>
                                                 </td>
-                                                <td className="px-4 py-3 font-medium">{c.client_name}</td>
-                                                <td className="px-4 py-3 text-xs">{c.jenis_akta}</td>
+                                                <td className="px-4 py-3 font-medium">
+                                                    {c.client_name}
+                                                </td>
+                                                <td className="px-4 py-3 text-xs">
+                                                    {c.jenis_akta}
+                                                </td>
                                                 <td className="min-w-28 px-4 py-3">
-                                                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                                                    <div
+                                                        role="progressbar"
+                                                        aria-label={`Progres ${c.nomor}`}
+                                                        aria-valuenow={pct}
+                                                        aria-valuemin={0}
+                                                        aria-valuemax={100}
+                                                        className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+                                                    >
                                                         <div
                                                             className="h-full rounded-full bg-primary"
-                                                            style={{ width: `${pct}%` }}
+                                                            style={{
+                                                                width: `${pct}%`,
+                                                            }}
                                                         />
                                                     </div>
-                                                    <div className="mt-1 text-[11px] text-muted-foreground">{pct}%</div>
+                                                    <div className="mt-1 text-[11px] text-muted-foreground">
+                                                        {pct}%
+                                                    </div>
                                                 </td>
                                                 <td className="px-4 py-3">
                                                     <StageBadge
-                                                        order={c.current_stage_order}
-                                                        label={c.current_stage_label}
-                                                        isCompleted={c.is_completed}
+                                                        order={
+                                                            c.current_stage_order
+                                                        }
+                                                        label={
+                                                            c.current_stage_label
+                                                        }
+                                                        isCompleted={
+                                                            c.is_completed
+                                                        }
                                                     />
-                                                    {c.draft_status === 'pending_approval' && (
+                                                    {c.draft_status ===
+                                                        'pending_approval' && (
                                                         <div className="mt-1">
                                                             <Badge
                                                                 variant="outline"
                                                                 className="border-amber-300 text-[10px] text-amber-700"
                                                             >
-                                                                Menunggu ACC Draf
+                                                                Menunggu ACC
+                                                                Draf
                                                             </Badge>
                                                         </div>
                                                     )}
                                                 </td>
                                                 <td className="px-4 py-3 text-xs">
                                                     <div>
-                                                        {formatRupiah(c.terbayar)} / {formatRupiah(c.biaya)}
+                                                        {formatRupiah(
+                                                            c.terbayar,
+                                                        )}{' '}
+                                                        /{' '}
+                                                        {formatRupiah(c.biaya)}
                                                     </div>
                                                     <div
                                                         className={
@@ -241,12 +344,20 @@ export default function CasesIndex({
                                                                 : 'text-emerald-600'
                                                         }
                                                     >
-                                                        {sisa > 0 ? `Sisa ${formatRupiah(sisa)}` : 'Lunas'}
+                                                        {sisa > 0
+                                                            ? `Sisa ${formatRupiah(sisa)}`
+                                                            : 'Lunas'}
                                                     </div>
                                                 </td>
                                                 <td className="px-4 py-3 text-right">
                                                     <Button asChild size="sm">
-                                                        <Link href={casesRoute.show(c.id)}>Buka</Link>
+                                                        <Link
+                                                            href={casesRoute.show(
+                                                                c.id,
+                                                            )}
+                                                        >
+                                                            Buka
+                                                        </Link>
                                                     </Button>
                                                 </td>
                                             </tr>
@@ -266,11 +377,14 @@ export default function CasesIndex({
                     </DialogHeader>
                     <form onSubmit={handleCreate} className="space-y-4">
                         <div className="space-y-1">
-                            <Label>Klien *</Label>
+                            <Label htmlFor="case-client-id">Klien *</Label>
                             <select
+                                id="case-client-id"
                                 className={selectCls}
                                 value={form.data.client_id}
-                                onChange={(e) => form.setData('client_id', e.target.value)}
+                                onChange={(e) =>
+                                    form.setData('client_id', e.target.value)
+                                }
                                 required
                             >
                                 {clients.map((cl) => (
@@ -281,57 +395,93 @@ export default function CasesIndex({
                             </select>
                         </div>
                         <div className="space-y-1">
-                            <Label>Jenis Akta / Layanan *</Label>
+                            <Label htmlFor="case-jenis-akta">
+                                Jenis Akta / Layanan *
+                            </Label>
                             <select
+                                id="case-jenis-akta"
                                 className={selectCls}
                                 value={form.data.jenis_akta}
-                                onChange={(e) => form.setData('jenis_akta', e.target.value)}
+                                onChange={(e) =>
+                                    form.setData('jenis_akta', e.target.value)
+                                }
                                 required
                             >
                                 {notarisConfig.jenisAkta.map((j) => (
                                     <option key={j.label} value={j.label}>
-                                        {j.label} {j.is_badan_usaha ? '(Badan Usaha)' : '(Non-Badan Usaha)'}
+                                        {j.label}{' '}
+                                        {j.is_badan_usaha
+                                            ? '(Badan Usaha)'
+                                            : '(Non-Badan Usaha)'}
                                     </option>
                                 ))}
                             </select>
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
                             <div className="space-y-1">
-                                <Label>Total Biaya (Rp) *</Label>
-                                <Input
-                                    type="number"
-                                    min="0"
+                                <Label htmlFor="case-biaya">Biaya (Rp) *</Label>
+                                <CurrencyInput
+                                    id="case-biaya"
+                                    minAmount={1}
+                                    placeholder="5.000.000"
                                     value={form.data.biaya}
-                                    onChange={(e) => form.setData('biaya', e.target.value)}
+                                    onValueChange={(val) =>
+                                        form.setData('biaya', val)
+                                    }
                                     required
                                 />
                             </div>
                             <div className="space-y-1">
-                                <Label>Target Selesai</Label>
+                                <Label htmlFor="case-target-selesai">
+                                    Target Selesai
+                                </Label>
                                 <Input
+                                    id="case-target-selesai"
                                     type="date"
                                     value={form.data.target_selesai}
-                                    onChange={(e) => form.setData('target_selesai', e.target.value)}
+                                    onChange={(e) =>
+                                        form.setData(
+                                            'target_selesai',
+                                            e.target.value,
+                                        )
+                                    }
                                 />
                             </div>
                         </div>
                         <div className="space-y-1">
-                            <Label>Penanggung Jawab</Label>
+                            <Label htmlFor="case-penanggung-jawab">
+                                Penanggung Jawab
+                            </Label>
                             <Input
+                                id="case-penanggung-jawab"
                                 value={form.data.penanggung_jawab}
-                                onChange={(e) => form.setData('penanggung_jawab', e.target.value)}
+                                onChange={(e) =>
+                                    form.setData(
+                                        'penanggung_jawab',
+                                        e.target.value,
+                                    )
+                                }
                             />
                         </div>
                         <div className="space-y-1">
-                            <Label>Catatan / Uraian Pekerjaan</Label>
+                            <Label htmlFor="case-catatan">
+                                Catatan / Uraian Pekerjaan
+                            </Label>
                             <textarea
-                                className="flex min-h-20 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+                                id="case-catatan"
+                                className="flex min-h-20 w-full rounded-xl border border-input bg-background/85 px-3 py-2 text-sm shadow-xs transition-[color,box-shadow,border-color] placeholder:text-muted-foreground focus-visible:border-amber-500/60 focus-visible:ring-2 focus-visible:ring-amber-500/20 focus-visible:outline-none"
                                 value={form.data.catatan}
-                                onChange={(e) => form.setData('catatan', e.target.value)}
+                                onChange={(e) =>
+                                    form.setData('catatan', e.target.value)
+                                }
                             />
                         </div>
                         <DialogFooter>
-                            <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setCreateOpen(false)}
+                            >
                                 Batal
                             </Button>
                             <Button type="submit" disabled={form.processing}>

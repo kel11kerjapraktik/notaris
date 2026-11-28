@@ -1,6 +1,8 @@
 import type { OfficeInfo } from '@/types';
 
-export function formatRupiah(value: number | string | null | undefined): string {
+export function formatRupiah(
+    value: number | string | null | undefined,
+): string {
     const num = Number(value ?? 0) || 0;
     return 'Rp ' + new Intl.NumberFormat('id-ID').format(Math.round(num));
 }
@@ -47,14 +49,22 @@ export function escapeHtml(str: string | number | null | undefined): string {
     });
 }
 
-export function exportCsv(filename: string, rows: Record<string, string | number | boolean | null | undefined>[]): void {
+export function exportCsv(
+    filename: string,
+    rows: Record<string, string | number | boolean | null | undefined>[],
+): void {
     if (!rows.length) return;
     const cols = Object.keys(rows[0]);
-    const quote = (v: unknown) => {
+    const quote = (v: string | number | boolean | null | undefined) => {
         const s = String(v ?? '');
         return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const csv = '\uFEFF' + [cols.join(';'), ...rows.map((r) => cols.map((c) => quote(r[c])).join(';'))].join('\n');
+    const csv =
+        '\uFEFF' +
+        [
+            cols.join(';'),
+            ...rows.map((r) => cols.map((c) => quote(r[c])).join(';')),
+        ].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -64,7 +74,12 @@ export function exportCsv(filename: string, rows: Record<string, string | number
     setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
-export function printDocument(title: string, subtitle: string, bodyHtml: string, office: OfficeInfo): void {
+export function printDocument(
+    title: string,
+    subtitle: string,
+    bodyHtml: string,
+    office: OfficeInfo,
+): void {
     const win = window.open('', '_blank', 'width=900,height=700');
     if (!win) {
         window.print();

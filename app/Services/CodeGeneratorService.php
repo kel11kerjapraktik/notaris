@@ -2,63 +2,44 @@
 
 namespace App\Services;
 
-use App\Models\Client;
-use App\Models\DeedCase;
-use App\Models\Payment;
+use Illuminate\Support\Facades\DB;
 
 class CodeGeneratorService
 {
     public function nextClientCode(): string
     {
-        $last = Client::query()
-            ->where('kode', 'like', 'KL-%')
-            ->orderByDesc('id')
-            ->value('kode');
-
-        $seq = $last ? (int) substr((string) $last, 3) + 1 : 1;
-
-        while (Client::where('kode', $code = 'KL-'.str_pad((string) $seq, 4, '0', STR_PAD_LEFT))->exists()) {
-            $seq++;
-        }
-
-        return $code;
+        return $this->nextSequence('clients', 'kode', 'KL-');
     }
 
     public function nextCaseNumber(): string
     {
-        $year = now()->format('Y');
-        $prefix = "AKT-{$year}-";
-
-        $last = DeedCase::query()
-            ->where('nomor', 'like', "{$prefix}%")
-            ->orderByDesc('id')
-            ->value('nomor');
-
-        $seq = $last ? (int) substr((string) $last, strlen($prefix)) + 1 : 1;
-
-        while (DeedCase::where('nomor', $code = $prefix.str_pad((string) $seq, 4, '0', STR_PAD_LEFT))->exists()) {
-            $seq++;
-        }
-
-        return $code;
+        return $this->nextSequence('deed_cases', 'nomor', 'AKT-'.now()->format('Y').'-');
     }
 
     public function nextInvoiceNumber(): string
     {
-        $year = now()->format('Y');
-        $prefix = "INV-{$year}-";
+        return $this->nextSequence('payments', 'no_inv', 'INV-'.now()->format('Y').'-');
+    }
 
-        $last = Payment::query()
-            ->where('no_inv', 'like', "{$prefix}%")
-            ->orderByDesc('id')
-            ->value('no_inv');
+    private function nextSequence(string $table, string $column, string $prefix): string
+    {
+        return DB::transaction(function () use ($table, $column, $prefix): string {
+            $query = DB::table($table)
+                ->where($column, 'like', "{$prefix}%")
+                ->orderByDesc('id');
 
-        $seq = $last ? (int) substr((string) $last, strlen($prefix)) + 1 : 1;
+            if (DB::connection()->getDriverName() === 'pgsql') {
+                $query->lockForUpdate();
+            }
 
-        while (Payment::where('no_inv', $code = $prefix.str_pad((string) $seq, 4, '0', STR_PAD_LEFT))->exists()) {
-            $seq++;
-        }
+            $last = $query->value($column);
+            $seq = $last ? (int) substr((string) $last, strlen($prefix)) + 1 : 1;
 
-        return $code;
+            while (DB::table($table)->where($column, $code = $prefix.str_pad((string) $seq, 4, '0', STR_PAD_LEFT))->exists()) {
+                $seq++;
+            }
+
+            return $code;
+        });
     }
 }

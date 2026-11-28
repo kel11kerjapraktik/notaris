@@ -8,6 +8,7 @@ use App\Models\DeedCase;
 use App\Models\Document;
 use App\Services\ActivityLogService;
 use App\Services\FileStorageService;
+use App\Support\DatabaseSearch;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -27,20 +28,46 @@ class ArchiveController extends Controller
         $search = trim((string) $request->query('search', ''));
 
         $clients = Client::query()
+            ->select(['id', 'kode', 'jenis', 'nama', 'nik', 'telepon', 'email'])
             ->with([
-                'company',
-                'deedCases' => fn ($q) => $q->withSum(
+                'company:id,client_id,nama',
+                'deedCases' => fn ($q) => $q->select([
+                    'id',
+                    'client_id',
+                    'nomor',
+                    'jenis_akta',
+                    'current_stage',
+                    'is_completed',
+                    'biaya',
+                    'nomor_akta',
+                    'tanggal_akta',
+                    'nomor_sk_ahu',
+                    'tanggal_sk_ahu',
+                    'completed_at',
+                ])->withSum(
                     ['payments as terbayar' => fn ($pq) => $pq->where('status', PaymentStatus::LUNAS)],
                     'jumlah',
                 ),
-                'documents' => fn ($q) => $q->latest(),
+                'documents' => fn ($q) => $q->select([
+                    'id',
+                    'client_id',
+                    'deed_case_id',
+                    'kategori',
+                    'nama',
+                    'nomor_dokumen',
+                    'tanggal_dokumen',
+                    'file_path',
+                    'file_name',
+                    'mime_type',
+                    'is_verified',
+                    'is_rejected',
+                    'created_at',
+                ])->latest(),
             ])
             ->when($search !== '', function ($query) use ($search) {
-                $like = '%'.$search.'%';
-                $query->where(function ($q) use ($like) {
-                    $q->where('kode', 'ilike', $like)
-                        ->orWhere('nama', 'ilike', $like)
-                        ->orWhereHas('company', fn ($cq) => $cq->where('nama', 'ilike', $like));
+                $query->where(function ($q) use ($search) {
+                    DatabaseSearch::orWhereLikeAny($q, ['kode', 'nama'], $search)
+                        ->orWhereHas('company', fn ($cq) => DatabaseSearch::whereLike($cq, 'nama', $search));
                 });
             })
             ->orderBy('nama')

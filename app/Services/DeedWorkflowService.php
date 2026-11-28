@@ -7,8 +7,11 @@ use App\Enums\DraftStatus;
 use App\Enums\PaymentStatus;
 use App\Enums\PaymentType;
 use App\Models\CaseStageHistory;
+use App\Models\Client;
 use App\Models\DeedCase;
+use App\Models\Document;
 use App\Models\User;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -46,7 +49,7 @@ class DeedWorkflowService
                 'deed_case_id' => $case->id,
                 'stage_order' => DeedStage::BIODATA_KLIEN->order(),
                 'stage_key' => DeedStage::BIODATA_KLIEN->value,
-                'action' => 'completed',
+                'action' => 'started',
                 'notes' => 'Berkas dibuat & biodata klien dicatat.',
                 'acted_by' => $actor->id,
             ]);
@@ -73,26 +76,29 @@ class DeedWorkflowService
                 ]);
             }
 
-            $this->guardStageExit($case, $current, $actor);
-
-            // Save optional stage-specific metadata (nomor_akta, nomor_sk_ahu, nib_perusahaan, etc.)
-            $fillableMeta = array_intersect_key($metadata, array_flip([
-                'nomor_akta',
-                'tanggal_akta',
-                'tanggal_ttd_minuta',
-                'nomor_sk_ahu',
-                'tanggal_sk_ahu',
-                'tanggal_pemilik_manfaat',
-                'status_pemilik_manfaat',
-                'nomor_tbnri',
-                'tanggal_tbnri',
-                'nib_perusahaan',
-                'kbli_oss',
-            ]));
+            // Save optional stage-specific metadata first so stage exit guards see submitted values
+            $fillableMeta = array_filter(
+                array_intersect_key($metadata, array_flip([
+                    'nomor_akta',
+                    'tanggal_akta',
+                    'tanggal_ttd_minuta',
+                    'nomor_sk_ahu',
+                    'tanggal_sk_ahu',
+                    'tanggal_pemilik_manfaat',
+                    'status_pemilik_manfaat',
+                    'nomor_tbnri',
+                    'tanggal_tbnri',
+                    'nib_perusahaan',
+                    'kbli_oss',
+                ])),
+                static fn (mixed $value): bool => $value !== null && $value !== '',
+            );
 
             if ($fillableMeta !== []) {
                 $case->fill($fillableMeta);
             }
+
+            $this->guardStageExit($case, $current, $actor);
 
             $next = $current->next();
 
@@ -130,14 +136,40 @@ class DeedWorkflowService
             }
 
             $case->current_stage = $next;
+
+            if ($next === DeedStage::VERIFIKASI_DOKUMEN && $case->doc_approval_status === 'none') {
+                if ($this->allCaseDocumentsVerified($case)) {
+                    $latestVerified = $case->documents()
+                        ->where('is_verified', true)
+                        ->latest('verified_at')
+                        ->first();
+
+                    $case->doc_approval_status = 'approved';
+                    $case->doc_approved_by = $latestVerified?->verified_by ?? ($actor->isNotaris() ? $actor->id : null);
+                    $case->doc_approved_at = $latestVerified?->verified_at ?? now();
+                } elseif ($case->documents()->exists()) {
+                    $case->doc_approval_status = 'pending_approval';
+                    $case->doc_approval_notes = null;
+
+                    CaseStageHistory::create([
+                        'deed_case_id' => $case->id,
+                        'stage_order' => DeedStage::VERIFIKASI_DOKUMEN->order(),
+                        'stage_key' => DeedStage::VERIFIKASI_DOKUMEN->value,
+                        'action' => 'doc_approval_requested',
+                        'notes' => 'Dokumen dari Data Klien otomatis diajukan untuk persetujuan Notaris.',
+                        'acted_by' => $actor->id,
+                    ]);
+                }
+            }
+
             $case->save();
 
             CaseStageHistory::create([
                 'deed_case_id' => $case->id,
-                'stage_order' => $next->order(),
-                'stage_key' => $next->value,
+                'stage_order' => $current->order(),
+                'stage_key' => $current->value,
                 'action' => 'completed',
-                'notes' => $notes,
+                'notes' => $notes ?: 'Tahap '.$current->label().' selesai.',
                 'acted_by' => $actor->id,
             ]);
 
@@ -175,16 +207,33 @@ class DeedWorkflowService
             ]);
 
             $case->current_stage = $next;
-            $case->save();
 
-            CaseStageHistory::create([
-                'deed_case_id' => $case->id,
-                'stage_order' => $next->order(),
-                'stage_key' => $next->value,
-                'action' => 'completed',
-                'notes' => 'Melanjutkan setelah melewati tahap '.$current->label(),
-                'acted_by' => $actor->id,
-            ]);
+            if ($next === DeedStage::VERIFIKASI_DOKUMEN && $case->doc_approval_status === 'none') {
+                if ($this->allCaseDocumentsVerified($case)) {
+                    $latestVerified = $case->documents()
+                        ->where('is_verified', true)
+                        ->latest('verified_at')
+                        ->first();
+
+                    $case->doc_approval_status = 'approved';
+                    $case->doc_approved_by = $latestVerified?->verified_by ?? ($actor->isNotaris() ? $actor->id : null);
+                    $case->doc_approved_at = $latestVerified?->verified_at ?? now();
+                } elseif ($case->documents()->exists()) {
+                    $case->doc_approval_status = 'pending_approval';
+                    $case->doc_approval_notes = null;
+
+                    CaseStageHistory::create([
+                        'deed_case_id' => $case->id,
+                        'stage_order' => DeedStage::VERIFIKASI_DOKUMEN->order(),
+                        'stage_key' => DeedStage::VERIFIKASI_DOKUMEN->value,
+                        'action' => 'doc_approval_requested',
+                        'notes' => 'Dokumen dari Data Klien otomatis diajukan untuk persetujuan Notaris.',
+                        'acted_by' => $actor->id,
+                    ]);
+                }
+            }
+
+            $case->save();
 
             $this->activityLog->record($actor, 'Lewati tahap '.$current->label(), $case, "{$case->nomor}: {$notes}");
 
@@ -228,6 +277,17 @@ class DeedWorkflowService
             }
 
             $case->current_stage = $prev;
+            if ($prev->order() <= DeedStage::VERIFIKASI_DOKUMEN->order()) {
+                $case->doc_approval_status = 'none';
+                $case->doc_approved_by = null;
+                $case->doc_approved_at = null;
+                $case->doc_approval_notes = null;
+            }
+            if ($prev->order() <= DeedStage::PENGERJAAN_AKTA->order()) {
+                $case->draft_status = DraftStatus::NONE;
+                $case->draft_approved_by = null;
+                $case->draft_approved_at = null;
+            }
             $case->save();
 
             CaseStageHistory::create([
@@ -270,29 +330,57 @@ class DeedWorkflowService
     {
         abort_unless($notaris->isNotaris(), 403, 'Hanya Notaris yang berwenang menyetujui verifikasi dokumen.');
 
-        $case->update([
-            'doc_approval_status' => 'approved',
-            'doc_approved_by' => $notaris->id,
-            'doc_approved_at' => now(),
-            'doc_approval_notes' => $notes,
-        ]);
+        return DB::transaction(function () use ($case, $notaris, $notes): DeedCase {
+            $case->update([
+                'doc_approval_status' => 'approved',
+                'doc_approved_by' => $notaris->id,
+                'doc_approved_at' => now(),
+                'doc_approval_notes' => $notes,
+            ]);
 
-        CaseStageHistory::create([
-            'deed_case_id' => $case->id,
-            'stage_order' => DeedStage::VERIFIKASI_DOKUMEN->order(),
-            'stage_key' => DeedStage::VERIFIKASI_DOKUMEN->value,
-            'action' => 'doc_approval_approved',
-            'notes' => $notes ?: 'Verifikasi dokumen disetujui (ACC) Notaris.',
-            'acted_by' => $notaris->id,
-        ]);
+            $case->documents()
+                ->where('is_verified', false)
+                ->where('is_rejected', false)
+                ->update([
+                    'is_verified' => true,
+                    'is_complete_checked' => true,
+                    'verified_by' => $notaris->id,
+                    'verified_at' => now(),
+                ]);
 
-        $this->activityLog->record($notaris, 'ACC verifikasi dokumen', $case, $case->nomor.($notes ? ": {$notes}" : ''));
+            CaseStageHistory::create([
+                'deed_case_id' => $case->id,
+                'stage_order' => DeedStage::VERIFIKASI_DOKUMEN->order(),
+                'stage_key' => DeedStage::VERIFIKASI_DOKUMEN->value,
+                'action' => 'doc_approval_approved',
+                'notes' => $notes ?: 'Verifikasi dokumen disetujui (ACC) Notaris.',
+                'acted_by' => $notaris->id,
+            ]);
 
-        if (! $case->is_completed && $case->current_stage === DeedStage::VERIFIKASI_DOKUMEN) {
-            return $this->advanceStage($case, $notaris, $notes ?: 'Verifikasi dokumen di-ACC Notaris.');
-        }
+            $this->activityLog->record($notaris, 'ACC verifikasi dokumen', $case, $case->nomor.($notes ? ": {$notes}" : ''));
 
-        return $case;
+            if (! $case->is_completed && $case->current_stage === DeedStage::VERIFIKASI_DOKUMEN && $this->hasConfirmedDp($case)) {
+                return $this->advanceStage($case, $notaris, $notes ?: 'Verifikasi dokumen di-ACC Notaris.');
+            }
+
+            return $case;
+        });
+    }
+
+    public function hasConfirmedDp(DeedCase $case): bool
+    {
+        return $case->payments()
+            ->whereIn('payment_type', [PaymentType::DP_50->value, PaymentType::TERMIN_LAIN->value])
+            ->where('status', PaymentStatus::LUNAS->value)
+            ->exists();
+    }
+
+    public function allCaseDocumentsVerified(DeedCase $case): bool
+    {
+        return $case->documents()->exists()
+            && ! $case->documents()
+                ->where(fn ($q) => $q->where('is_verified', false)->orWhere('is_rejected', true))
+                ->exists();
     }
 
     public function rejectDocVerification(DeedCase $case, User $notaris, string $notes): DeedCase
@@ -321,7 +409,7 @@ class DeedWorkflowService
         return $case;
     }
 
-    public function resubmitRevisionIfNeeded(DeedCase $case, User $actor): void
+    public function resubmitRevisionIfNeeded(DeedCase $case, User $actor, bool $includeDraft = true): void
     {
         if ($actor->isNotaris()) {
             return;
@@ -333,13 +421,24 @@ class DeedWorkflowService
             $this->requestDocApproval($case, $actor, 'Berkas diperbarui/ditambahkan oleh Admin setelah revisi.');
         }
 
-        if ($case->draft_status === DraftStatus::REVISION_REQUESTED) {
+        if ($includeDraft && $case->draft_status === DraftStatus::REVISION_REQUESTED) {
             $this->requestDraftApproval($case, $actor, 'Berkas/draf diperbarui/ditambahkan oleh Admin setelah revisi.');
         }
     }
 
     public function requestDraftApproval(DeedCase $case, User $actor, ?string $notes = null): DeedCase
     {
+        $hasDraftFile = $case->documents()
+            ->where('kategori', 'Draft Akta')
+            ->whereNotNull('file_path')
+            ->exists();
+
+        if (! $hasDraftFile) {
+            throw ValidationException::withMessages([
+                'draft' => 'Unggah minimal 1 file Draf Akta terlebih dahulu sebelum mengajukan ACC ke Notaris.',
+            ]);
+        }
+
         $case->update(['draft_status' => DraftStatus::PENDING_APPROVAL]);
 
         CaseStageHistory::create([
@@ -360,28 +459,41 @@ class DeedWorkflowService
     {
         abort_unless($notaris->isNotaris(), 403, 'Hanya Notaris yang berwenang menyetujui draf akta.');
 
-        $case->update([
-            'draft_status' => DraftStatus::APPROVED,
-            'draft_approved_by' => $notaris->id,
-            'draft_approved_at' => now(),
-        ]);
+        return DB::transaction(function () use ($case, $notaris, $notes): DeedCase {
+            $case->update([
+                'draft_status' => DraftStatus::APPROVED,
+                'draft_approved_by' => $notaris->id,
+                'draft_approved_at' => now(),
+            ]);
 
-        CaseStageHistory::create([
-            'deed_case_id' => $case->id,
-            'stage_order' => DeedStage::PENGERJAAN_AKTA->order(),
-            'stage_key' => DeedStage::PENGERJAAN_AKTA->value,
-            'action' => 'draft_approved',
-            'notes' => $notes ?: 'Draf akta disetujui Notaris.',
-            'acted_by' => $notaris->id,
-        ]);
+            $case->documents()
+                ->where('kategori', 'Draft Akta')
+                ->where('is_verified', false)
+                ->where('is_rejected', false)
+                ->update([
+                    'is_verified' => true,
+                    'is_complete_checked' => true,
+                    'verified_by' => $notaris->id,
+                    'verified_at' => now(),
+                ]);
 
-        $this->activityLog->record($notaris, 'Setujui draf akta', $case, $case->nomor);
+            CaseStageHistory::create([
+                'deed_case_id' => $case->id,
+                'stage_order' => DeedStage::PENGERJAAN_AKTA->order(),
+                'stage_key' => DeedStage::PENGERJAAN_AKTA->value,
+                'action' => 'draft_approved',
+                'notes' => $notes ?: 'Draf akta disetujui Notaris.',
+                'acted_by' => $notaris->id,
+            ]);
 
-        if (! $case->is_completed && $case->current_stage === DeedStage::PENGERJAAN_AKTA) {
-            return $this->advanceStage($case, $notaris, $notes ?: 'Draf akta disetujui Notaris.');
-        }
+            $this->activityLog->record($notaris, 'Setujui draf akta', $case, $case->nomor);
 
-        return $case;
+            if (! $case->is_completed && $case->current_stage === DeedStage::PENGERJAAN_AKTA) {
+                return $this->advanceStage($case, $notaris, $notes ?: 'Draf akta disetujui Notaris.');
+            }
+
+            return $case;
+        });
     }
 
     public function requestDraftRevision(DeedCase $case, User $notaris, string $notes): DeedCase
@@ -424,10 +536,29 @@ class DeedWorkflowService
             }
         }
 
-        if ($current === DeedStage::VERIFIKASI_DOKUMEN && $case->doc_approval_status !== 'approved') {
-            throw ValidationException::withMessages([
-                'stage' => 'Verifikasi dokumen harus diajukan dan di-ACC oleh Notaris terlebih dahulu sebelum Pengerjaan Akta.',
-            ]);
+        if ($current === DeedStage::VERIFIKASI_DOKUMEN) {
+            if ($case->doc_approval_status !== 'approved') {
+                if ($this->allCaseDocumentsVerified($case)) {
+                    $latestVerified = $case->documents()
+                        ->where('is_verified', true)
+                        ->latest('verified_at')
+                        ->first();
+
+                    $case->doc_approval_status = 'approved';
+                    $case->doc_approved_by = $latestVerified?->verified_by ?? ($actor->isNotaris() ? $actor->id : null);
+                    $case->doc_approved_at = $latestVerified?->verified_at ?? now();
+                } else {
+                    throw ValidationException::withMessages([
+                        'stage' => 'Verifikasi dokumen harus diajukan dan di-ACC oleh Notaris terlebih dahulu sebelum Pengerjaan Akta.',
+                    ]);
+                }
+            }
+
+            if (! $this->hasConfirmedDp($case)) {
+                throw ValidationException::withMessages([
+                    'stage' => 'Pembayaran DP 50% wajib di-ACC (Lunas) oleh Notaris terlebih dahulu sebelum masuk ke tahap Pengerjaan Akta.',
+                ]);
+            }
         }
 
         if ($current === DeedStage::PENGERJAAN_AKTA && $case->draft_status !== DraftStatus::APPROVED) {
@@ -436,11 +567,65 @@ class DeedWorkflowService
             ]);
         }
 
-        if ($current === DeedStage::PENANDATANGANAN_MINUTA && ! $actor->isNotaris()) {
-            throw ValidationException::withMessages([
-                'stage' => 'Pengesahan Penandatanganan Minuta Akta hanya dapat dilakukan oleh Notaris.',
-            ]);
+        if ($current === DeedStage::PENANDATANGANAN_MINUTA) {
+            if (! $actor->isNotaris()) {
+                throw ValidationException::withMessages([
+                    'stage' => 'Pengesahan Penandatanganan Minuta Akta hanya dapat dilakukan oleh Notaris.',
+                ]);
+            }
+
+            if (empty($case->tanggal_ttd_minuta)) {
+                throw ValidationException::withMessages([
+                    'stage' => 'Tanggal TTD Minuta wajib diisi sebelum mengesahkan ke Penerbitan Akta & SK AHU.',
+                ]);
+            }
         }
+
+        if ($current === DeedStage::PENERBITAN_AKTA_SK_AHU) {
+            if (blank($case->nomor_akta) || empty($case->tanggal_akta)) {
+                throw ValidationException::withMessages([
+                    'stage' => 'Nomor Akta dan Tanggal Akta wajib terisi sebelum melanjutkan tahap.',
+                ]);
+            }
+
+            if ($case->is_badan_usaha && (blank($case->nomor_sk_ahu) || empty($case->tanggal_sk_ahu))) {
+                throw ValidationException::withMessages([
+                    'stage' => 'Nomor SK AHU dan Tanggal SK AHU wajib diisi untuk akta Badan Usaha sebelum Pengisian Pemilik Manfaat.',
+                ]);
+            }
+        }
+    }
+
+    public function syncOrphanClientsIfNeeded(User $actor): void
+    {
+        Cache::rememberForever('notaris:orphan_clients_synced', function () use ($actor): bool {
+            if (Client::query()->whereDoesntHave('deedCases')->exists()) {
+                DB::transaction(function () use ($actor): void {
+                    $clientsWithoutCase = Client::query()
+                        ->select(['id', 'jenis', 'catatan'])
+                        ->whereDoesntHave('deedCases')
+                        ->get();
+
+                    foreach ($clientsWithoutCase as $client) {
+                        $defaultJenis = $client->jenis === 'perusahaan' ? 'Akta Pendirian PT' : 'Lainnya';
+                        $createdCase = $this->createCase([
+                            'client_id' => $client->id,
+                            'jenis_akta' => $defaultJenis,
+                            'biaya' => 0,
+                            'penanggung_jawab' => $actor->name,
+                            'catatan' => $client->catatan,
+                        ], $actor);
+
+                        Document::query()
+                            ->where('client_id', $client->id)
+                            ->whereNull('deed_case_id')
+                            ->update(['deed_case_id' => $createdCase->id]);
+                    }
+                });
+            }
+
+            return true;
+        });
     }
 
     private function resolveIsBadanUsaha(string $jenisAkta): bool

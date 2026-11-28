@@ -9,13 +9,11 @@ use App\Http\Controllers\DeedCaseController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\PaymentController;
 use Illuminate\Support\Facades\Route;
+use Inertia\Inertia;
 
-Route::get('/', fn () => auth()->check()
-    ? redirect()->route('dashboard')
-    : redirect()->route('login')
-)->name('home');
+Route::get('/', fn () => Inertia::render('welcome'))->name('home');
 
-Route::middleware(['auth'])->group(function () {
+Route::middleware(['auth', 'active'])->group(function () {
     Route::get('dashboard', DashboardController::class)->name('dashboard');
 
     // Data Klien

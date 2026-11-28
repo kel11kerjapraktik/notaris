@@ -3,12 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Enums\PaymentStatus;
-use App\Models\Client;
+use App\Http\Requests\AdvanceDeedStageRequest;
+use App\Http\Requests\StageNoteRequest;
+use App\Http\Requests\StoreDeedCaseRequest;
+use App\Http\Requests\UpdateDeedCaseRequest;
 use App\Models\DeedCase;
-use App\Models\Document;
 use App\Services\ActivityLogService;
 use App\Services\DeedWorkflowService;
 use App\Services\FileStorageService;
+use App\Services\NotarisStatsService;
+use App\Support\DatabaseSearch;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -21,37 +25,34 @@ class DeedCaseController extends Controller
         private readonly DeedWorkflowService $workflow,
         private readonly ActivityLogService $activityLog,
         private readonly FileStorageService $fileStorage,
+        private readonly NotarisStatsService $stats,
     ) {}
 
     public function index(Request $request): Response
     {
-        // Automatically ensure every client without a deed case appears in Monitoring Akta
-        $clientsWithoutCase = Client::query()
-            ->with('company')
-            ->whereDoesntHave('deedCases')
-            ->get();
-
-        foreach ($clientsWithoutCase as $client) {
-            $defaultJenis = $client->jenis === 'perusahaan' ? 'Akta Pendirian PT' : 'Lainnya';
-            $createdCase = $this->workflow->createCase([
-                'client_id' => $client->id,
-                'jenis_akta' => $defaultJenis,
-                'biaya' => 0,
-                'penanggung_jawab' => $request->user()->name,
-                'catatan' => $client->catatan,
-            ], $request->user());
-
-            Document::query()
-                ->where('client_id', $client->id)
-                ->whereNull('deed_case_id')
-                ->update(['deed_case_id' => $createdCase->id]);
+        if ($user = $request->user()) {
+            $this->workflow->syncOrphanClientsIfNeeded($user);
         }
 
         $search = trim((string) $request->query('search', ''));
         $stage = (string) $request->query('stage', 'semua');
 
         $cases = DeedCase::query()
-            ->with(['client.company'])
+            ->select([
+                'id',
+                'nomor',
+                'client_id',
+                'jenis_akta',
+                'is_badan_usaha',
+                'biaya',
+                'target_selesai',
+                'penanggung_jawab',
+                'current_stage',
+                'is_completed',
+                'draft_status',
+                'created_at',
+            ])
+            ->with(['client:id,nama,jenis', 'client.company:id,client_id,nama'])
             ->withSum(['payments as terbayar' => fn ($q) => $q->where('status', PaymentStatus::LUNAS)], 'jumlah')
             ->when($stage !== 'semua', function ($query) use ($stage) {
                 if ($stage === 'selesai') {
@@ -65,19 +66,17 @@ class DeedCaseController extends Controller
                 }
             })
             ->when($search !== '', function ($query) use ($search) {
-                $like = '%'.$search.'%';
-                $query->where(function ($q) use ($like) {
-                    $q->where('nomor', 'ilike', $like)
-                        ->orWhere('jenis_akta', 'ilike', $like)
-                        ->orWhereHas('client', function ($cq) use ($like) {
-                            $cq->where('nama', 'ilike', $like)
-                                ->orWhereHas('company', fn ($ccq) => $ccq->where('nama', 'ilike', $like));
+                $query->where(function ($q) use ($search) {
+                    DatabaseSearch::orWhereLikeAny($q, ['nomor', 'jenis_akta'], $search)
+                        ->orWhereHas('client', function ($cq) use ($search) {
+                            DatabaseSearch::whereLike($cq, 'nama', $search)
+                                ->orWhereHas('company', fn ($ccq) => DatabaseSearch::whereLike($ccq, 'nama', $search));
                         });
                 });
             })
             ->latest()
             ->get()
-            ->map(fn (DeedCase $case) => [
+            ->map(fn (DeedCase $case): array => [
                 'id' => $case->id,
                 'nomor' => $case->nomor,
                 'client_id' => $case->client_id,
@@ -96,19 +95,9 @@ class DeedCaseController extends Controller
                 'created_at' => $case->created_at?->toISOString(),
             ]);
 
-        $clients = Client::query()
-            ->with('company')
-            ->orderBy('nama')
-            ->get()
-            ->map(fn (Client $c) => [
-                'id' => $c->id,
-                'kode' => $c->kode,
-                'label' => $c->kode.' — '.$c->nama.($c->company?->nama ? " ({$c->company->nama})" : ''),
-            ]);
-
         return Inertia::render('cases/index', [
             'cases' => $cases,
-            'clients' => $clients,
+            'clients' => $this->stats->clientOptions(),
             'filters' => [
                 'search' => $search,
                 'stage' => $stage,
@@ -116,18 +105,9 @@ class DeedCaseController extends Controller
         ]);
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(StoreDeedCaseRequest $request): RedirectResponse
     {
-        $data = $request->validate([
-            'client_id' => ['required', 'exists:clients,id'],
-            'jenis_akta' => ['required', 'string', 'max:255'],
-            'biaya' => ['required', 'numeric', 'min:0'],
-            'target_selesai' => ['nullable', 'date'],
-            'penanggung_jawab' => ['nullable', 'string', 'max:255'],
-            'catatan' => ['nullable', 'string', 'max:2000'],
-        ]);
-
-        $case = $this->workflow->createCase($data, $request->user());
+        $case = $this->workflow->createCase($request->validated(), $request->user());
 
         return redirect()
             ->route('cases.show', $case)
@@ -152,29 +132,9 @@ class DeedCaseController extends Controller
         ]);
     }
 
-    public function update(Request $request, DeedCase $case): RedirectResponse
+    public function update(UpdateDeedCaseRequest $request, DeedCase $case): RedirectResponse
     {
-        $data = $request->validate([
-            'jenis_akta' => ['required', 'string', 'max:255'],
-            'biaya' => ['required', 'numeric', 'min:0'],
-            'target_selesai' => ['nullable', 'date'],
-            'penanggung_jawab' => ['nullable', 'string', 'max:255'],
-            'catatan' => ['nullable', 'string', 'max:2000'],
-            'nomor_akta' => ['nullable', 'string', 'max:64'],
-            'tanggal_akta' => ['nullable', 'date'],
-            'tanggal_ttd_minuta' => ['nullable', 'date'],
-            'nomor_sk_ahu' => ['nullable', 'string', 'max:100'],
-            'tanggal_sk_ahu' => ['nullable', 'date'],
-            'tanggal_pemilik_manfaat' => ['nullable', 'date'],
-            'status_pemilik_manfaat' => ['nullable', 'string', 'max:64'],
-            'nomor_tbnri' => ['nullable', 'string', 'max:100'],
-            'tanggal_tbnri' => ['nullable', 'date'],
-            'nib_perusahaan' => ['nullable', 'string', 'max:64'],
-            'kbli_oss' => ['nullable', 'string', 'max:100'],
-        ]);
-
-        $case->update($data);
-        $this->workflow->resubmitRevisionIfNeeded($case, $request->user());
+        $case->update($request->validated());
         $this->activityLog->record($request->user(), 'Ubah berkas akta', $case, $case->nomor);
 
         return back()->with('success', "Berkas {$case->nomor} berhasil diperbarui.");
@@ -196,30 +156,17 @@ class DeedCaseController extends Controller
         return redirect()->route('cases.index')->with('success', "Berkas {$nomor} berhasil dihapus.");
     }
 
-    public function advance(Request $request, DeedCase $case): RedirectResponse
+    public function advance(AdvanceDeedStageRequest $request, DeedCase $case): RedirectResponse
     {
-        $data = $request->validate([
-            'notes' => ['nullable', 'string', 'max:1000'],
-            'nomor_akta' => ['nullable', 'string', 'max:64'],
-            'tanggal_akta' => ['nullable', 'date'],
-            'tanggal_ttd_minuta' => ['nullable', 'date'],
-            'nomor_sk_ahu' => ['nullable', 'string', 'max:100'],
-            'tanggal_sk_ahu' => ['nullable', 'date'],
-            'tanggal_pemilik_manfaat' => ['nullable', 'date'],
-            'status_pemilik_manfaat' => ['nullable', 'string', 'max:64'],
-            'nomor_tbnri' => ['nullable', 'string', 'max:100'],
-            'tanggal_tbnri' => ['nullable', 'date'],
-            'nib_perusahaan' => ['nullable', 'string', 'max:64'],
-            'kbli_oss' => ['nullable', 'string', 'max:100'],
-        ]);
-
-        $notes = $data['notes'] ?? null;
-        unset($data['notes']);
-
-        $updated = $this->workflow->advanceStage($case, $request->user(), $notes, $data);
+        $updated = $this->workflow->advanceStage(
+            $case,
+            $request->user(),
+            $request->validated('notes'),
+            $request->stageMetadata(),
+        );
 
         if ($updated->is_completed) {
-            $updated->loadMissing('client');
+            $updated->loadMissing('client:id,kode');
 
             return redirect()
                 ->route('archives.index', ['search' => $updated->client?->kode])
@@ -229,98 +176,58 @@ class DeedCaseController extends Controller
         return back()->with('success', 'Tahapan berkas berhasil diperbarui.');
     }
 
-    public function skip(Request $request, DeedCase $case): RedirectResponse
+    public function skip(StageNoteRequest $request, DeedCase $case): RedirectResponse
     {
-        $data = $request->validate([
-            'notes' => ['required', 'string', 'min:3', 'max:1000'],
-        ]);
-
-        $this->workflow->skipStage($case, $request->user(), $data['notes']);
+        $this->workflow->skipStage($case, $request->user(), (string) $request->validated('notes'));
 
         return back()->with('success', 'Tahapan non-badan usaha berhasil dilewati.');
     }
 
-    public function revert(Request $request, DeedCase $case): RedirectResponse
+    public function revert(StageNoteRequest $request, DeedCase $case): RedirectResponse
     {
-        $data = $request->validate([
-            'notes' => ['required', 'string', 'min:3', 'max:1000'],
-        ]);
-
-        $this->workflow->revertStage($case, $request->user(), $data['notes']);
+        $this->workflow->revertStage($case, $request->user(), (string) $request->validated('notes'));
 
         return back()->with('success', 'Berkas dikembalikan ke tahap sebelumnya.');
     }
 
-    public function requestDocApproval(Request $request, DeedCase $case): RedirectResponse
+    public function requestDocApproval(StageNoteRequest $request, DeedCase $case): RedirectResponse
     {
-        $data = $request->validate([
-            'notes' => ['nullable', 'string', 'max:1000'],
-        ]);
-
-        $this->workflow->requestDocApproval($case, $request->user(), $data['notes'] ?? null);
+        $this->workflow->requestDocApproval($case, $request->user(), $request->validated('notes'));
 
         return back()->with('success', 'Permohonan persetujuan verifikasi dokumen dikirim ke Notaris.');
     }
 
-    public function approveDocVerification(Request $request, DeedCase $case): RedirectResponse
+    public function approveDocVerification(StageNoteRequest $request, DeedCase $case): RedirectResponse
     {
-        Gate::authorize('notaris');
-
-        $data = $request->validate([
-            'notes' => ['nullable', 'string', 'max:1000'],
-        ]);
-
-        $this->workflow->approveDocVerification($case, $request->user(), $data['notes'] ?? null);
+        $this->workflow->approveDocVerification($case, $request->user(), $request->validated('notes'));
 
         return back()->with('success', 'Verifikasi dokumen telah di-ACC Notaris.');
     }
 
-    public function rejectDocVerification(Request $request, DeedCase $case): RedirectResponse
+    public function rejectDocVerification(StageNoteRequest $request, DeedCase $case): RedirectResponse
     {
-        Gate::authorize('notaris');
-
-        $data = $request->validate([
-            'notes' => ['required', 'string', 'min:3', 'max:1000'],
-        ]);
-
-        $this->workflow->rejectDocVerification($case, $request->user(), $data['notes']);
+        $this->workflow->rejectDocVerification($case, $request->user(), (string) $request->validated('notes'));
 
         return back()->with('success', 'Verifikasi dokumen ditolak dengan catatan.');
     }
 
-    public function requestDraft(Request $request, DeedCase $case): RedirectResponse
+    public function requestDraft(StageNoteRequest $request, DeedCase $case): RedirectResponse
     {
-        $data = $request->validate([
-            'notes' => ['nullable', 'string', 'max:1000'],
-        ]);
-
-        $this->workflow->requestDraftApproval($case, $request->user(), $data['notes'] ?? null);
+        $this->workflow->requestDraftApproval($case, $request->user(), $request->validated('notes'));
 
         return back()->with('success', 'Permohonan persetujuan draf dikirim ke Notaris.');
     }
 
-    public function approveDraft(Request $request, DeedCase $case): RedirectResponse
+    public function approveDraft(StageNoteRequest $request, DeedCase $case): RedirectResponse
     {
-        Gate::authorize('notaris');
-
-        $data = $request->validate([
-            'notes' => ['nullable', 'string', 'max:1000'],
-        ]);
-
-        $this->workflow->approveDraft($case, $request->user(), $data['notes'] ?? null);
+        $this->workflow->approveDraft($case, $request->user(), $request->validated('notes'));
 
         return back()->with('success', 'Draf akta disetujui.');
     }
 
-    public function requestRevision(Request $request, DeedCase $case): RedirectResponse
+    public function requestRevision(StageNoteRequest $request, DeedCase $case): RedirectResponse
     {
-        Gate::authorize('notaris');
-
-        $data = $request->validate([
-            'notes' => ['required', 'string', 'min:3', 'max:1000'],
-        ]);
-
-        $this->workflow->requestDraftRevision($case, $request->user(), $data['notes']);
+        $this->workflow->requestDraftRevision($case, $request->user(), (string) $request->validated('notes'));
 
         return back()->with('success', 'Permintaan revisi draf dikirim.');
     }

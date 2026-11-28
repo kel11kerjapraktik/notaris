@@ -11,7 +11,9 @@ export default function AppSidebarLayout({
     children,
     breadcrumbs = [],
 }: AppLayoutProps) {
-    const { flash } = usePage<{ flash?: { success?: string | null; error?: string | null } }>().props;
+    const { flash } = usePage<{
+        flash?: { success?: string | null; error?: string | null };
+    }>().props;
 
     useEffect(() => {
         if (flash?.success) {
