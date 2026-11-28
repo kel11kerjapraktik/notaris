@@ -1,23 +1,31 @@
 import { Head } from '@inertiajs/react';
+import { Palette } from 'lucide-react';
 import AppearanceTabs from '@/components/appearance-tabs';
-import Heading from '@/components/heading';
 import { edit as editAppearance } from '@/routes/appearance';
 
 export default function Appearance() {
     return (
         <>
-            <Head title="Appearance settings" />
+            <Head title="Tampilan Aplikasi" />
 
-            <h1 className="sr-only">Appearance settings</h1>
+            <section className="max-w-xl rounded-2xl border border-amber-500/20 bg-card p-5 shadow-xs sm:p-6">
+                <div className="mb-5 flex items-start gap-3.5 border-b border-amber-500/15 pb-4">
+                    <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                        <Palette className="size-4.5" />
+                    </div>
+                    <div>
+                        <h2 className="text-base font-semibold text-foreground">
+                            Tampilan Aplikasi
+                        </h2>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                            Sesuaikan tema warna antarmuka antara mode terang,
+                            gelap, atau mengikuti sistem.
+                        </p>
+                    </div>
+                </div>
 
-            <div className="space-y-6">
-                <Heading
-                    variant="small"
-                    title="Appearance settings"
-                    description="Update the appearance settings for your account"
-                />
-                <AppearanceTabs />
-            </div>
+                <AppearanceTabs className="flex w-full" />
+            </section>
         </>
     );
 }
@@ -25,7 +33,7 @@ export default function Appearance() {
 Appearance.layout = {
     breadcrumbs: [
         {
-            title: 'Appearance settings',
+            title: 'Tampilan Aplikasi',
             href: editAppearance(),
         },
     ],
